@@ -1,0 +1,23 @@
+info /^Configuration summary/
+
+# Mark the delta information:
+info /Delta threshold values:/
+
+# Mark the start of a test
+start /^Info: starting new test\.$/
+
+# Mark the delta tables
+start /^(Algorithm|File) deltas:$/
+warn /^No data for .* in .*\.$/
+
+# Mark the report
+start /^Thresholds exceeded \d+ times?$/
+info /^excess\tunit\ttest$/
+error /^[\d.]+\t[^\t\n]+\t[^\t\n]+$/
+info /^Configuration:$/
+
+# generic things
+info  /INFO:/
+warn  /WARN:/
+warn  /WARNING:/
+error /ERROR:/
