@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/dash
 # Copyright (C) 2006-2017 wolfSSL Inc.
 #
 # This file is part of wolfSSL.
@@ -17,293 +17,384 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
 ###############################################################################
-# always run the cleanup function when this script exits
-trap 'exit 255' INT KILL QUIT
+trap 'exit 255' INT QUIT
 trap 'cleanup' EXIT
 
 # internal variables
-name=$(basename -s .sh "$0")
-tmp=$(mktemp -d ".${name}XXXXXX")
-lib_pat='src/.libs/src_libwolfssl_la-*.o wolfcrypt/src/.libs/src_libwolfssl_la-*.o'
-default_config_dir="."
+name="$(basename -s .sh "$0")"
+oldPWD="$PWD"
+{ # get absolute path for dir
+    cd "$(dirname "$0")" || exit 255
+    dir="$PWD"
+}
+work="${dir}/.tmp"
+[ ! -d "$work" ] && mkdir -p "$work"
+store="${dir}/.cache/${name}"
+[ ! -d "$store" ] && mkdir -p "$store"
+default_config_dir="$dir"
 default_config_file="config.txt"
+wolfssl_url="https://github.com/wolfssl/wolfssl"
+wolfssl_branch="master"
+wolfssl_lib_pat='src_libwolfssl_la-*.o'
+ret=0
 unset failed
-unset server_pid
+unset file
 
-# make copies of environment variables, using defaults if they are not set
-config_dir="${CONFIG_DIR:-${default_config_dir}}"
-config_file="${CONFIG_FILE:-${default_config_file}}"
+# make copies of environment variables, or fall back on defaults
+config_dir=${CONFIG_DIR:-${default_config_dir}}
+config_file=${CONFIG_FILE:-${default_config_file}}
 
-# flag arguments with default values
-# @TODO: think about these default values
-size_threshold=$(( 8 * 1024 ))
-bench_threshold=10
-conn_threshold=100
-through_threshold=10
-database="$config_dir/$config_file"
-# get a symbolic reference to HEAD. If that fails, get the hash instead.
+# flags with default values
+default_threshold="110%"
+config_database="${config_dir}/${config_file}"
 current_commit="$(git symbolic-ref --short HEAD || git rev-parse --short HEAD)"
+thresholds="|" # pre-set leading divider
 
-# flag arguments without default values
-unset algorithms
-unset all
-unset baseline_commit
-unset config
-unset files
+# flags without default values
 unset verbose
+unset baseline_commit
+unset baseline_commit_abs
+unset config
+unset tests
 
 ###############################################################################
-# cleanup; set to always run when this script exits
+# cleanup function; allways called on exit
 ###############################################################################
 cleanup() {
-    rm -rf "$tmp"
-    git checkout "$current_commit" --quiet
-    [ -n "$server_pid" ] && kill $server_pid
+    # @temporary: keep $work alive so that we can scrutinize it
+    #rm -rf "$work"
+    [ -n "${server_pid+y}" ] && kill "$server_pid"
+    [ "$PWD" = "$dir/wolfssl" ] && git checkout --quiet "$current_commit"
+    cd "$oldPWD" || exit 255
 }
 
 ###############################################################################
-# report the failed tests
+# Report errors
 #
-# $1: number of failed tests
+# $num_failed: number of errors
+# $failed:     errors
 #
-# return 0 if test reported, 1 if no test reported, or non-zero otherwise
+# prints report
+#
+# clobbers oldIFS
+#
+# returns 0 if report was made, 1 if no report was made
 ###############################################################################
 report() {
-    [ $# -ne  1 ] && return 255 # enforce calling convention
-    [ $1 -eq  0 ] && return   1 # nothing to report
-    [ $1 -ne  1 ] && s=s        # pluralize!
+    [ $# -ne 1 ] && return 255
+    [ "$num_failed" -eq 0 ] && return 1
 
-    cat >&3 <<REPORT_BLOCK
+    # print this divider only if we are in verbose mode
+    cat >&3 <<END
 ===============================================================================
-REPORT_BLOCK
-    cat <<REPORT_BLOCK
-Thresholds exceeded $1 time${s}
+END
+cat <<END
+Thesholds exceeded: $1
 
-REPORT_BLOCK
-    # break down $failed by semicolons and store the fields in $@
-    oldIFS="$IFS" IFS=';'
-    set -- $failed
+END
+# break up $failed by semicolons and store them in $@
+oldIFS="$IFS" IFS=';'
+eval 'set -- $failed'
+IFS="$oldIFS"
+
+for each in "$@"
+do
+    # break up $each by conlons and store in $@
+    oldIFS="$IFS" IFS=':'
+    eval 'set -- $each'
     IFS="$oldIFS"
 
-    for each in "$@"; do
-        # break down $each by colons
-        oldIFS="$IFS" IFS=':'
-        printf "%s\t%s\t%s\n" $each
-        IFS="$oldIFS"
-    done
-    cat <<REPORT_BLOCK
+    # print those fields
+    printf "%s\t%s\t%s\n" "${1:-"ERROR"}" "${2:-"ERROR"}" "${3:-"ERROR"}"
+done
+cat <<END
 
-Configuration:
+config:
 $(./config.status --config)
 ===============================================================================
-REPORT_BLOCK
+END
 
-    unset s
-    return 0
+return 0
 }
 
 ###############################################################################
-# record stats for present commit.
+# get the threshold for a test from the baseline
 #
-# $1: name for record (usually "baseline" or "current")
+# $1: test name
+# $2: file with stored baseline data
 #
-# return 0 on success, 255 on error
+# $baseline_commit: for reporting
+#
+# clobbers line, unit, value, relative_threshold
+#
+# prints the threshold if it exists
+#
+# returns 0 if the threshold exists, non-zero if it does not
 ###############################################################################
-record_stats_for() {
-    [ $# -ne  1 ] && return 255 # enforce calling convention
+threshold_for() {
+    # find the line in the database
+    line="$(grep "$1$" "$2")"
 
-    # @TODO: should there be flags to control num and size?
-    num=128
-    size=$(( 128 * 1024 * 1024 )) # 128 MB
-
-    echo "Taking down $1 size"
-    du -b $lib_pat >"$tmp/$1_size"
-
-    echo "Taking down $1 benchmark"
-    ./wolfcrypt/benchmark/benchmark >"$tmp/$1_bench"
-
-    # start up the echoserver
-    examples/echoserver/echoserver 1>/dev/null 2>/dev/null &
-    server_pid=$!
-
-    echo "Taking down $1 TLS connection benchmark"
-    ./examples/client/client -b $num >"$tmp/$1_conn"
-
-    echo "Taking down $1 TLS throughput benchmark"
-    ./examples/client/client -B $size >"$tmp/$1_through"
-
-    { # kill the echoserver
-        kill $server_pid
-        wait
-    } 1>/dev/null 2>/dev/null
-    unset server_pid
-    return 0
-}
-
-###############################################################################
-# Checkout and build a commit of wolfSSL
-#
-# $1: commit to check out before building (any valid git refenence)
-#
-# return 0 on success, non-zero otherwise
-###############################################################################
-build_wolfssl() {
-    [ $# -ne  1 ] && return 255 # enforce calling convention
-
-    # the below will cause build_wolfssl to fail if any command fails
-    git checkout "$1"   || return $?
-    ./autogen.sh        || return $?
-    ./configure $config || return $?
-    make
-    return $?
-}
-
-###############################################################################
-# calculate and check the delta against the threshold
-#
-# $1: baseline
-# $2: current
-# $3: threshold
-# $4: units
-# $5: test name
-#
-# return 0 on success, non-zero on failure
-###############################################################################
-check_delta() {
-    [ $# -ne  5 ] && return 255 # enforce calling convention
-
-    # use awk for math because it produces prettier numbers than bc
-    delta=$(awk "BEGIN {print ($2 - $1)}")
-    excess=$(awk "BEGIN {print ($delta - $3)}")
-
-    printf "%s\t%s\n" "$delta" "$5"
-    if [ $(awk "BEGIN {print ($excess > 0)}") -eq 1 ]; then
-        failed="$failed;$excess:$4:$5"
-        num_failed=$(( num_failed + 1))
+    # check to make sure the line exists
+    if [ -z "$line" ]
+    then
+        printf -- '---\t---\t---\t%s\n' "$1 (stored)" >&3
+        return 1
+    else
+        echo "$line" \
+            | awk '{print $1, $2, "---", $3" (stored)"}' FS="\t" OFS="\t" >&3
     fi
+
+    # retrive unit and value from the database
+    unit="$(echo "$line" | cut -sf 2)"
+    value="$(echo "$line" | cut -sf 1)"
+
+    # extract threshold
+    case "$thresholds" in
+        *"|$1="*)
+            threshold="$(echo "$thresholds" \
+                | sed "s/^.*|$1=\([^|]*\)|.*$/\1/")"
+            ;;
+        *"|$unit="*)
+            threshold="$(echo "$thresholds" \
+                | sed "s/^.*|$unit=\([^|]*\)|.*$/\1/")"
+            ;;
+        *)
+            threshold="$default_threshold"
+            ;;
+    esac
+
+    case "$threshold" in
+        *"%")
+            # use ${parameter%word} construct to strip trailing '%'
+            awk "BEGIN {print ${value} * ${threshold%"%"} / 100}"
+            ;;
+        "+"*|"-"*)
+            # use ${parameter#word} construct to strip leading '+'
+            awk "BEGIN {print ${value} * ${threshold#"+"} / 100}"
+            ;;
+        *)
+            # treat the threshold as an absolute value
+            echo "$threshold"
+            ;;
+    esac
+
+    unset file line unit value relative_threshold
+    return 0
+}
+
+###############################################################################
+# get the unit for a test
+#
+# $1: test
+# $2: database
+#
+# prints the unit
+#
+# returns 0
+###############################################################################
+unit_for() {
+    grep "$1$" "$2" | cut -sf 2
+    return 0
+}
+
+###############################################################################
+# get the value for a test
+#
+# $1: test
+# $2: database
+#
+# prints the value
+#
+# returns 0
+###############################################################################
+value_for() {
+    grep "$1$" "$2" | cut -sf 1
+    return 0
+}
+
+###############################################################################
+# Retrieve database of stored configuration data. In the end, one file per
+# commit will be placed into $work/data/, which is first cleaned.
+#
+# $work:                work directory
+# $store:               directory where databases are stored
+# $baseline_commit_abs: name of database file
+#
+# clobbers file
+#
+# returns 0
+###############################################################################
+open_database() {
+    rm -rf "$work/data/"
+    file="$store/$baseline_commit_abs"
+    mkdir "$work/data/"
+
+    # test if we need to generate the database
+    if [ ! -f "$file" ]
+    then
+        # make $store if there is a need to
+        [ ! -d "$store" ] && mkdir "$store"
+
+        # nothing to do
+    else
+        # split up the database into individual files per configuration
+        csplit -z -n 6 -f "$work/data/" "$file" '/\[ .* \]/' '{*}'
+    fi
+
+    return 0
+}
+
+###############################################################################
+# Put all of the individual files back into a single file and clean up
+#
+# $work:                work directory
+# $store:               directory where databases are stored
+# $baseline_commit_abs: name of database file
+#
+# returns 0
+###############################################################################
+close_database() {
+    cat "$work/data"/* >"$store/$baseline_commit_abs"
+    rm -rf "$work"/data
+}
+
+###############################################################################
+# generate data
+#
+# $wolfssl_lib_pat: pattern for .o files
+#
+# clobbers server_pid, num_connections, num_bytes
+#
+# prints formated data
+#
+# returns 0
+###############################################################################
+generate() {
+    num_connections=100
+    num_bytes=8192 # 8KiB
+
+    # take down file data
+    find ./ -type f -name "$wolfssl_lib_pat" -exec du -b {} + \
+        | awk '{ sub(".*/", "", $2); print $1, "B", $2 }' OFS="\t"
+
+    # take down algorithm benchmark data
+    # @temporary: only do data for benchmarks with cpB values
+    ./wolfcrypt/benchmark/benchmark \
+        | awk '/Cycles/ { print $13, "cpB", $1 }' OFS="\t"
+
+    # take down connection data
+    { # start up server
+        ./examples/server/server -i >/dev/null 2>&1 &
+        server_pid=$!
+    } >&3 2>&4
+    ./examples/client/client -b "$num_connections" \
+        | awk '{ print $4, "ms", "connections" }' OFS="\t"
+    { # kill the server
+        kill "$server_pid"
+        unset server_pid
+        wait
+    } >&3 2>&4
+
+    # take down throughput data
+    { # start up server
+        ./examples/server/server -i -B "$num_bytes" &
+        server_pid=$!
+    } >&3 2>&4
+    ./examples/client/client -B "$num_bytes" \
+        | awk '/\(.*\)/ { print $5, $6, "Client "$2}' OFS="\t" FS="[( \t)]+"
+    { # kill the server
+        kill "$server_pid"
+        unset server_pid
+        wait
+    } >&3 2>&4
+
     return 0
 }
 
 ###############################################################################
 # Main function; occurs after command line arguments are parsed
 #
-# return number of exceeded otherwise (0 included)
+# $1: configuration
+#
+# $work:            work directory
+# $baseline_commit: commit to use as baseline
+# $current_commit:  commit to return to when we're done
+#
+# clobers num_failed, failed, base_file, cur_file, oldIFS, threshold, value,
+#         unit
+#
+# returns number of exceeded tests (0 included)
 ###############################################################################
 main() {
-    echo "Info: starting new test." >&3
     num_failed=0
+    failed="excess:unit:test;" # preload with a header
 
-    #preload failed with headding column
-    failed='excess:unit:test'
+    # find the file representing this configuration
+    base_file="$(grep -lr "[ $1 ]" "$work/data/")"
+    if [ -z "$base_file" ]
+    then
+        # generate baseline data for $config
+        echo "INFO: no stored configuration; generating..."
 
-    # collect raw statistics for later processing
-    { # these braces allow for mass redirection
-        build_wolfssl "$baseline_commit"
-        record_stats_for baseline
-        build_wolfssl "$current_commit"
-        record_stats_for current
-    } 1>&3 2>&4
-    # stats written to $tmp/{baseline,current}_{size,bench,conn,through}
+        # make a base_file with a name that won't conflict with anything
+        [ ! -d "$work/data" ] && mkdir "$work/data"
+        base_file="$(mktemp "$work/data/XXXXXX")"
+        git checkout "$baseline_commit"
+        ./autogen.sh
+        echo "$1" | xargs ./configure
+        make
 
-    ###########################################################################
-    # files:
-    ###########################################################################
-    printf "File deltas:\n" >&3
+        echo "[ $1 ]" >"$base_file"
+        generate >>"$base_file"
 
-    # in the below, we only care if files is unset. An empty list is acceptable
-    if [ -z ${files+x} ]; then
-        # Get a comma separated list off all files
-        files="$(cut -f 2 <"$tmp/current_size" | xargs -n 1 basename \
-                | paste -sd ",")"
+        git checkout "$current_commit"
+
+        echo "INFO: generation complete"
+    fi >&3 2>&4
+
+
+    { # generate data for the current commit
+        ./autogen.sh
+        echo "$1" | xargs ./configure
+        make
+
+        cur_file="$work/current"
+
+        echo "[ $1 ]" >"$cur_file"
+        generate >>"$cur_file"
+    } >&3 2>&4
+
+    # generate a list of tests if necessary
+    if [ -z "${tests+y}" ]
+    then
+        tests="$(cut -sf 3 <"$cur_file" | paste -sd ,)"
     fi
 
-    # break down $files by commas and store the fields in $@
+    # separate the list of tests by commas and store in $@
     oldIFS="$IFS" IFS=','
-    set -- $files
+    eval 'set -- $tests'
     IFS="$oldIFS"
 
-    # calculate and check file size deltas
-    for each in "$@"; do
-        current_line=$(grep -i "$each" "$tmp/current_size")
-        baseline_line=$(grep -i "$each" "$tmp/baseline_size")
+    echo "Absolute values:" >&3
+    printf "value\tunit\tmax\ttest\n" >&3
+    for each in "$@"
+    do
+        threshold="$(threshold_for "$each" "$base_file")"
+        value="$(value_for "$each" "$cur_file")"
+        unit="$(unit_for "$each" "$cur_file")"
+        echo "$value:$unit:${threshold:-"---"}:$each (current)" \
+            | awk '{print $1, $2, $3, $4}' FS=":" OFS="\t" >&3
+        [ -z "$threshold" ] && continue
 
-        if [ -z "$current_line" ]; then
-            echo "No data for $each in $current_commit." >&4
-            continue;
-        elif [ -z "$baseline_line" ]; then
-            echo "No data for $each in $baseline_commit." >&4
-            continue
+        # use awk for math because I like how it prints numbers
+        excess="$(awk "BEGIN {print ($threshold - $value)}")"
+        exceeded="$(awk "BEGIN {print ($value > $threshold)}")"
+        if [ "$exceeded" -eq 1 ]
+        then
+            num_failed=$((num_failed + 1))
+            failed="${failed}$excess:$unit:$each;"
         fi
-
-        current=$(echo "$current_line" | cut -f 1 )
-        baseline=$(echo "$baseline_line" | cut -f 1 )
-
-        check_delta "$baseline" "$current" "$size_threshold" B "$each" >&3
-    done
-
-    ###########################################################################
-    # algorithms:
-    ###########################################################################
-    printf "\nAlgorithm deltas:\n" >&3
-
-    # in the below, we only care if files is unset. An empty list is acceptable
-    if [ -z ${algorithms+x} ]; then
-        # Get a comma separated list off all algorithms
-        # @TEMP: only handle algorithms that have "Cycles per byte" values
-        algorithms="$(awk '/Cycles/ {print $1}' <"$tmp/current_bench" \
-                     | paste -sd ",")"
-    fi
-
-    # break down $algorithms by commas and store the fields in $@
-    oldIFS="$IFS" IFS=','
-    set -- $algorithms
-    IFS="$oldIFS"
-
-    # calculate and check cpB deltas
-    for each in "$@"; do
-        current_line=$(grep -i "^$each\s" "$tmp/current_bench")
-        baseline_line=$(grep -i "^$each\s" "$tmp/baseline_bench")
-
-        if [ -z "$current_line" ]; then
-            echo "No data for $each in $current_commit." >&4
-            continue;
-        elif [ -z "$baseline_line" ]; then
-            echo "No data for $each in $baseline_commit." >&4
-            continue
-        fi
-
-        current=$(echo "$current_line" | awk '{print $13}' )
-        baseline=$(echo "$baseline_line" | awk '{print $13}' )
-
-        # @NOTE: for now, this script can only track the delta for cpB
-        check_delta "$baseline" "$current" "$bench_threshold" cpB "$each" >&3
-    done
-
-    # calculate and check TLS connections delta
-    name="TLS connection"
-    current=$(awk '{print $4}' <"$tmp/current_conn")
-    baseline=$(awk '{print $4}' <"$tmp/baseline_conn")
-
-    check_delta "$baseline" "$current" "$conn_threshold" ms "$name" >&3
-
-    # calculate and check TLS throughput deltas
-    name="TLS throughput"
-    for each in TX RX; do
-        current_line=$(grep "$each" "$tmp/current_through")
-        baseline_line=$(grep "$each" "$tmp/baseline_through")
-
-        if [ -z "$current_line" ]; then
-            echo "No data for $each in $current_commit." >&3
-            continue;
-        elif [ -z "$baseline_line" ]; then
-            echo "No data for $each in $baseline_commit." >&3
-            continue
-        fi
-
-        current=$(echo "$current_line" | awk '{print $5}' )
-        baseline=$(echo "$baseline_line" | awk '{print $5}' )
-
-        check_delta "$baseline" "$current" "$through_threshold" MBps "$name ($each)" >&3
     done
 
     return $num_failed
@@ -312,52 +403,43 @@ main() {
 
 
 print_help() {
-    cat << HELP_BLOCK
-Usage: $0 [OPTION]... [-- [config]...]
+    # @TODO: review
+    cat <<HELP_BLOCK
+Usage: $0 [OPTION]...
 Check the compile size and performance characteristics of wolfSSL for a known
 configuration against a previous version.
 
-This script expects to be run from the wolfSSL root directory.
-
  Control:
-  -A, --all                 run once for every line in the database
-  -a, --algorithms=LIST     comma separated list of algorithms to check
-  -c, --baseline=commit     git commit to treat as last known good commit
-  -d, --database=FILE       file containing known configurations (implies -A)
-  -f, --files=LIST          comma separated list of files to check
-  -h, --help                display this help and exit
-  -v, --verbose             report the deltas of each test
+  -h, --help                display this help page then exit
+  -v, --verbose             display extra information
+      --tests=LIST          comma separated list of tests to perform
+  -c, --baseline=COMMIT     commit to treat as baseline
+  -f, --file=FILE           file from which to read configurations
 
  Thresholds:
-  -b, --bench=THRESHOLD     minimum acceptable performance delta in cpB
-  -s, --size=THRESHOLD      minimum acceptable file size delta in B
-  -t, --time=THRESHOLD      minimum acceptable connection time delta in ms
-  -T, --through=THRESHOLD   minimum acceptable throughput speed delta in MBps
+  -T, --threshold=THRESHOLD default threshold
+  -uUNIT=THRESHOLD          threshold for tests measured in UNIT
+  -tTEST=THRESHOLD          threshold specifically for TEST
 
-CONFIGs will be used as the known configuration. The "--" is neccesary to
-prevent CONFIGs from being interpreted as flags. If no CONFIGs are specified,
-this is understood to mean a configuration with no flags. If "--all" is set,
-all CONFIGs are ignored.
+THRESHOLD may be any integer/floating point number. If it ends with a percent
+sign (%), then it will be treated as a percentage of the stored value. If it
+starts with a plus or minus (+ or -), it is treated as a relative threshold.
+Otherwise, the value of THRESHOLD is treated as an absolute value
 
-By default, "--database" is \$CONFIG_DIR/\$CONFIG_FILE, which are environment
-variables. When neither are envirenment variable is set, this defaults to
-$default_config_dir/$default_config_file
+@temporary: cannot stack + or - with %. This should be implemented eventually
 
-For both "--algorithms" and "--files", if the flag do not appear, all
-algorithms or files (dending on which flag) for which there exists data in the
-current commit will be checked. An empty list is a valid list. For
-"--algorithms", the names should match (case insensitive) with how the
-benchmark program reports them.
+UNIT and TEST are case sensitive.
 HELP_BLOCK
     return 0
 }
 
-optstring='s:b:a::c:hvd:f::Aqt:T:'
-long_opts='size:,bench:,algorithms:,baseline:,help,verbose,database:,files,all,quiet,time:,through'
+optstring='hvc:T:u:t:f:'
+long_opts='help,verbose,tests:,baseline:,threshold:,file:'
 
 # reorder the command line arguments to make it easier to parse
 opts=$(getopt -o "$optstring" -l "$long_opts" -n "$0" -- "$@")
-if [ $? -ne 0 ]; then
+if test $? -ne 0
+then
     echo "Error has occurred with getopt. Exiting." >&2
     exit 255
 fi
@@ -366,30 +448,40 @@ fi
 eval set -- "$opts"
 unset opts
 
-while true; do
+while true
+do
     case "$1" in
-        '-s'|'--size')
-            size_threshold="$2"
+        '-u'|'-t')
+            # @temporary: no way to distinguish -u from -t: they have purely
+            # semantic meaning
+
+            # check the argument format
+            if ! echo "$2" | grep -q '^[a-zA-Z0-9_ -]\+=[+-]\?[0-9.]\+%\?$'
+            then
+                # @temporary: this isn't a very helpful error message, is it.
+                echo "Error: $1$2: invalid"
+                shift 2
+                continue
+            fi
+
+            thresholds="${thresholds}$2|"
             shift 2
             ;;
-        '-b'|'--bench')
-            bench_threshold="$2"
+        '-T'|'--threshold')
+            default_threshold="$2"
             shift 2
             ;;
-        '-t'|'--time')
-            conn_threshold="$2"
+        '--tests')
+            tests="$2"
             shift 2
             ;;
-        '-T'|'--through')
-            through_threshold="$2"
-            shift 2
-            ;;
-        '-a'|'--algorithms')
-            algorithms="$2"
-            shift 2
-            ;;
-        '-f'|'--files')
-            files="$2"
+        '-f'|'--file')
+            if [ "$2" = "-" ]
+            then
+                config_database="/dev/self/fd/0"
+            else
+                config_database="$2"
+            fi
             shift 2
             ;;
         '-c'|'--baseline')
@@ -404,76 +496,84 @@ while true; do
             print_help
             exit 0
             ;;
-        '-d'|'--database')
-            database="$2"
-            all=yes
-            shift 2
-            ;;
-        '-A'|'--all')
-            all=yes
-            shift
-            ;;
         '--')
             shift
             break
             ;;
         *)
-            echo "Internal error!" >&2
+            echo "Error: internal to getopts!" >&2
             exit 255
             ;;
     esac
 done
 
-# All remaining arguments are configure flags.
-
-if [ -z "$baseline_commit" ]; then
-    # Get most resent version of wolfSSL
-    location='https://api.github.com/repos/wolfSSL/wolfssl/releases/latest'
-    baseline_commit="$(curl -fLsS "$location" | grep "tag_name" \
-                      | cut -d \" -f 4)"
-fi
+# @temporary
 
 # use file descriptors 3 and 4 as verbose output channels (out and err
 # respectively). If --verbose is used, redirect 3 and 4 to 1 and 2
 # respectively, else redirect each to /dev/null
-if [ "$verbose" = "yes" ]; then
+if [ "$verbose" = "yes" ]
+then
     exec 3>&1 4>&2
 else
     exec 3>/dev/null 4>&3
 fi
 
-{ # echo commit info as verbose information
+{ # do setup
+
+    # get wolfSSL if neccesary and cd into it
+    if [ ! -d "$dir/wolfssl" ]
+    then
+        git clone "$wolfssl_url" -b "$wolfssl_branch" "$dir/wolfssl"
+        cd "$dir/wolfssl" || exit 255
+    else
+        cd "$dir/wolfssl" || exit 255
+        git pull --force
+    fi
+
+    # get latest commit
+    if [ -z "$baseline_commit" ]
+    then
+        # Get most resent version of wolfSSL
+        location='https://api.github.com/repos/wolfSSL/wolfssl/releases/latest'
+        baseline_commit="$(curl -fLsS "$location" | grep "tag_name" \
+            | cut -d \" -f 4)"
+        baseline_commit_abs="$(git rev-parse "$baseline_commit")"
+    fi
+
+    open_database
+
+    echo ""
     echo "INFO: current commit: $current_commit"
     echo "INFO: baseline commit: $baseline_commit"
     echo ""
-} 1>&3 2>&4
+} >&3 2>&4
 
+### NOTE: #####################################################################
+# I would have loved to use a `cat FILE | while read var` construct here, but
+# apparently that makes this entire while loop run in a subshell, meaning that
+# I would not be able to change the value of $ret from here. Similarly, in good
+# ol' sh, even doing redirection with '<' would put this loop into a subshell.
+# As such, the maddness of saving &0 in &5, redirecting $tmp to be &0, then
+# finally restoring &0 and closing &5 is the most POSIXly correct way of doing
+# this such that I can still modify the $ret variable.
+#
+tmp_input_file="$(mktemp)"
+# remove any line where '#' is the first non-white space character
+grep -v '^\s*#' "$config_database" >"$tmp_input_file"
+exec 5<&0 <"$tmp_input_file"
+# read from the config database (note redirections above)
+while read -r config
+do
+    # @temporary: prepend CC=clang to all configs
+    main "CC=clang $config"
+    report "$num_failed" && ret=1
+done
+exec <&5 5<&-
+rm -f "$tmp_input_file"
+unset tmp_input_file
 
-{ # report thresholds
-    # @TEMP: not very future-proof; likely to become out-of-date if new
-    # thresholds are added or their units change
-    printf "Delta threshold values:\n"
-    printf "File size\t${size_threshold} B\n"
-    printf "Benchmark\t${bench_threshold} cpB\n"
-    printf "Connection\t${conn_threshold} ms\n"
-    printf "Throughput\t${through_threshold} MBps\n"
-}
-
-ret=0
-if [ "$all" = "yes" ]; then
-    # loop for every line of $database where '#' is not the first
-    # non-whitespace character.
-    grep -v "^\s*#" "$database" | while read config; do
-        # @TEMP: prepend CC=clang to all configs
-        config="CC=clang $*"
-        main
-        report $? && ret=1
-    done
-else
-    # @TEMP: prepend CC=clang to config
-    config="CC=clang $*"
-    main
-    report $? && ret=1
-fi
+close_database
+cd "$oldPWD" || exit 255
 
 exit $ret

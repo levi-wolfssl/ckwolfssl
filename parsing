@@ -1,13 +1,13 @@
 info /^Configuration summary/
 
 # Mark the delta information:
-info /Delta threshold values:/
+info /^Delta threshold values:$/
 
 # Mark the start of a test
 start /^Info: starting new test\.$/
 
 # Mark the delta tables
-start /^(Algorithm|File) deltas:$/
+start /^Deltas:$/
 warn /^No data for .* in .*\.$/
 
 # Mark the report
