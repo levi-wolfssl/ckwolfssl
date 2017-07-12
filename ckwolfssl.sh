@@ -63,7 +63,6 @@ unset tests
 cleanup() {
     # @temporary: keep $work alive so that we can scrutinize it
     #rm -rf "$work"
-    [ -n "${server_pid+y}" ] && kill "$server_pid"
     [ "$PWD" = "$dir/wolfssl" ] && git checkout --quiet "$current_commit"
     cd "$oldPWD" || exit 255
 }
@@ -100,12 +99,7 @@ IFS="$oldIFS"
 for each in "$@"
 do
     # break up $each by conlons and store in $@
-    oldIFS="$IFS" IFS=':'
-    eval 'set -- $each'
-    IFS="$oldIFS"
-
-    # print those fields
-    printf "%s\t%s\t%s\n" "${1:-"ERROR"}" "${2:-"ERROR"}" "${3:-"ERROR"}"
+    echo "$each" | awk '{print $1, $2, $3, $3}' FS=":" OFS="\t"
 done
 cat <<END
 
@@ -283,31 +277,18 @@ generate() {
     ./wolfcrypt/benchmark/benchmark \
         | awk '/Cycles/ { print $13, "cpB", $1 }' OFS="\t"
 
+    # @TODO: don't use scripts/benchmark: server output is fucky
     # take down connection data
-    { # start up server
-        ./examples/server/server -i >/dev/null 2>&1 &
-        server_pid=$!
-    } >&3 2>&4
-    ./examples/client/client -b "$num_connections" \
-        | awk '{ print $4, "ms", "connections" }' OFS="\t"
-    { # kill the server
-        kill "$server_pid"
-        unset server_pid
-        wait
-    } >&3 2>&4
+    ./scripts/benchmark.test 1 "$num_connections" \
+        | awk '/wolfSSL_connect/ { print $4, "ms", "connections" }' OFS="\t"
 
+    # @TODO: don't use scripts/benchmark: server output is fucky
     # take down throughput data
-    { # start up server
-        ./examples/server/server -i -B "$num_bytes" &
-        server_pid=$!
-    } >&3 2>&4
-    ./examples/client/client -B "$num_bytes" \
-        | awk '/\(.*\)/ { print $5, $6, "Client "$2}' OFS="\t" FS="[( \t)]+"
-    { # kill the server
-        kill "$server_pid"
-        unset server_pid
-        wait
-    } >&3 2>&4
+    ./scripts/benchmark.test 2 "$num_bytes" \
+        | awk 'BEGIN       { prefix="ERROR" }
+               /Benchmark/ { prefix=$2 }
+               /\(.*\)/    { print $5, $6, prefix" "$2 }
+              ' OFS="\t" FS="[( \t)]+"
 
     return 0
 }
@@ -388,7 +369,7 @@ main() {
         [ -z "$threshold" ] && continue
 
         # use awk for math because I like how it prints numbers
-        excess="$(awk "BEGIN {print ($threshold - $value)}")"
+        excess="$(awk "BEGIN {print ($value - $threshold)}")"
         exceeded="$(awk "BEGIN {print ($value > $threshold)}")"
         if [ "$exceeded" -eq 1 ]
         then
@@ -478,7 +459,7 @@ do
         '-f'|'--file')
             if [ "$2" = "-" ]
             then
-                config_database="/dev/self/fd/0"
+                config_database="/proc/self/fd/0"
             else
                 config_database="$2"
             fi
