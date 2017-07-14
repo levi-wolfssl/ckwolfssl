@@ -1,5 +1,5 @@
 #!/bin/dash
-# shellcheck shell=sh
+# shellcheck shell=dash
 
 # Copyright (C) 2006-2017 wolfSSL Inc.
 #
@@ -19,10 +19,11 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
 ###############################################################################
+trap 'exit 255' INT QUIT
 trap 'cleanup' EXIT
 
 # cleaned version of this script's name
-name="$(basename -s .sh "$0")"
+name=$(basename -s .sh "$0")
 
 # copies of environment variables, or fall back on defaults
 oldPWD=$PWD
@@ -47,7 +48,6 @@ ret=0
 default_threshold=110%
 config_database=${config_dir}/${config_file}
 current_commit=$(git symbolic-ref --short HEAD || git rev-parse --short HEAD)
-thresholds="|" # pre-set leading divider
 
 # flags without default values
 unset verbose
@@ -55,6 +55,7 @@ unset baseline_commit
 unset baseline_commit_abs
 unset config
 unset tests
+unset thresholds
 
 ###############################################################################
 # cleanup function; allways called on exit
@@ -76,11 +77,9 @@ cleanup() {
 # Report errors
 #
 # $num_failed: number of errors
-# $failed:     errors
+# $failed:     errors to report
 #
 # prints report
-#
-# clobbers oldIFS
 #
 # returns 0 if report was made, 1 if no report was made
 ###############################################################################
@@ -95,17 +94,8 @@ cat <<END
 Thesholds exceeded: $1
 
 END
-# break up $failed by semicolons and store them in $@
-oldIFS="$IFS" IFS=';'
-# shellcheck disable=SC2086
-set -- $failed
-IFS="$oldIFS"
-
-for each in "$@"
-do
-    # break up $each by conlons and store in $@
-    echo "$each" | awk '{print $1, $2, $3, $4}' FS=":" OFS="\t"
-done
+    echo "$failed" \
+        | awk 'NF == 4 { print $1, $2, $3, $4 } ' RS=';' FS=':' OFS="\t"
 cat <<END
 
 config:
@@ -117,37 +107,34 @@ return 0
 }
 
 ###############################################################################
-# get the threshold for a test from the baseline
+# get the raw threshold value for a test from the baseline
 #
 # $1: test name
 # $2: test unit
 #
-# $baseline_commit: for reporting
+# $default_threshold: default threshold va/ue
 #
-# clobbers line, unit, value, threshold
+# clobbers value
 #
-# prints the threshold if it exists
+# prints the threshold
 #
 # returns 0 if the threshold exists, non-zero if it does not
 ###############################################################################
 threshold_for() {
     case "$thresholds" in
         *"|$1="*)
-            threshold="$(echo "$thresholds" \
-                | sed "s/^.*|$1=\([^|]*\)|.*$/\1/")"
+            echo "$thresholds" \
+                | awk '$1 == str { print $2 }' RS="|" FS="=" str="$1"
             ;;
         *"|$2="*)
-            threshold="$(echo "$thresholds" \
-                | sed "s/^.*|$2=\([^|]*\)|.*$/\1/")"
+            echo "$thresholds" \
+                | awk '$1 == str { print $2 }' RS="|" FS="=" str="$2"
             ;;
         *)
-            threshold="$default_threshold"
+            echo "$default_threshold"
             ;;
     esac
 
-    echo "$threshold"
-
-    unset file line unit value relative_threshold
     return 0
 }
 
@@ -386,13 +373,16 @@ main() {
     IFS="$oldIFS"
 
     echo "Absolute values:" >&3
-    printf "cur\tprev\tmax\tunit\ttest\n" >&3
+    printf "cur\tprev\tmax\tunit\tthresh.\ttest\n" >&3
     for each in "$@"
     do
-        threshold=$(threshold_for "$each" "$unit")
+        unset threshold base_value cur_value unit max line
+
         base_value=$(value_for "$each" "$base_file")
         cur_value=$(value_for "$each" "$cur_file")
         unit=$(unit_for "$each" "$cur_file")
+
+        threshold=$(threshold_for "$each" "$unit")
         max=$(threshold_to_abs "$threshold" "$base_value")
 
         # build up a line of colon-delimited values
@@ -400,12 +390,12 @@ main() {
         line="${line}:${base_value:-"---"}"
         line="${line}:${max:-"N/A"}"
         line="${line}:${unit:-"ERROR"}"
+        line="${line}:${threshold:-"ERROR"}"
         line="${line}:${each:-"ERROR"}"
 
-        #echo "$cur_value:${base_value:-"---"}:${max:-"---"}:$unit:$each" \
-        # report those values
+        # report those values to the verbose output descriptor
         echo "$line" \
-            | awk '{print $1, $2, $3, $4, $5 }' FS=":" OFS="\t" >&3
+            | awk '{ print $1, $2, $3, $4, $5, $6 }' FS=":" OFS="\t" >&3
 
         # only do the math if it makes sense to
         [ -z "$max" ] && continue
@@ -487,7 +477,7 @@ do
                 continue
             fi
 
-            thresholds="${thresholds}$2|"
+            thresholds="${thresholds:-|}$2|"
             shift 2
             ;;
         '-T'|'--threshold')
@@ -574,12 +564,12 @@ fi
     if [ -f "$file" ]
     then
         # split up the database into individual files per configuration
-        csplit -z -n 6 -f "$data/" "$file" '/\[ .* \]/' '{*}'
+        csplit -q -z -n 6 -f "$data/" "$file" '/\[ .* \]/' '{*}'
     fi
 
     echo ""
-    echo "INFO: current commit: $current_commit"
-    echo "INFO: baseline commit: $baseline_commit"
+    echo "INFO: current commit:  '$current_commit'"
+    echo "INFO: baseline commit: '$baseline_commit'"
     echo ""
 } >&3 2>&4
 
@@ -592,6 +582,7 @@ fi
 # finally restoring &0 and closing &5 is the most POSIXly correct way of doing
 # this such that I can still modify the $ret variable.
 #
+
 # remove any line where '#' is the first non-white space character
 grep -v '^\s*#' "$config_database" >"$input_file"
 exec 5<&0 <"$input_file"
