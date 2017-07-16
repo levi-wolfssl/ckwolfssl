@@ -1,6 +1,5 @@
 #!/bin/dash
-# shellcheck shell=dash
-
+# @TODO: change "dash" above to be "sh"; it is as it is now for local testing
 # Copyright (C) 2006-2017 wolfSSL Inc.
 #
 # This file is part of wolfSSL.
@@ -38,10 +37,9 @@ data=${work}/data
 wolfssl_url="https://github.com/wolfssl/wolfssl"
 wolfssl_branch="master"
 wolfssl_lib_pat="src_libwolfssl_la-*.o"
-unset failed
-
 server_ready=/tmp/wolfssl_server_ready
 input_file=${work}/cleaned_config
+unset failed
 ret=0
 
 # flags with default values
@@ -64,7 +62,7 @@ cleanup() {
     # @temporary: keep $work alive so that we can scrutinize it
     #rm -rf "$work"
     rm -f "$server_ready"
-    [ "$PWD" = "$dir/wolfssl" ] && git checkout --quiet "$current_commit"
+    [ "$PWD" = "${dir:?}/wolfssl" ] && git checkout --quiet "$current_commit"
     if [ -n "$server_pid" ]
     then
         kill "$server_pid"
@@ -90,13 +88,10 @@ report() {
     cat >&3 <<END
 ===============================================================================
 END
-cat <<END
+    cat <<END
 Thesholds exceeded: $1
 
-END
-    echo "$failed" \
-        | awk 'NF == 4 { print $1, $2, $3, $4 } ' RS=';' FS=':' OFS="\t"
-cat <<END
+$(echo "$failed" | awk 'NF==4 { print $1, $2, $3, $4 }' RS=";" FS=":" OFS="\t")
 
 config:
 $(./config.status --config)
@@ -114,21 +109,20 @@ return 0
 #
 # $default_threshold: default threshold va/ue
 #
-# clobbers value
-#
 # prints the threshold
 #
 # returns 0 if the threshold exists, non-zero if it does not
 ###############################################################################
 threshold_for() {
+    # TODO: there's probably a more robust way to do this
     case "$thresholds" in
-        *"|$1="*)
+        *"test=$1="*)
             echo "$thresholds" \
-                | awk '$1 == str { print $2 }' RS="|" FS="=" str="$1"
+                | awk '$2 == str { print $3 }' RS="|" FS="=" str="$1"
             ;;
-        *"|$2="*)
+        *"unit=$2="*)
             echo "$thresholds" \
-                | awk '$1 == str { print $2 }' RS="|" FS="=" str="$2"
+                | awk '$2 == str { print $3 }' RS="|" FS="=" str="$2"
             ;;
         *)
             echo "$default_threshold"
@@ -257,7 +251,7 @@ client_server() {
 ###############################################################################
 # generate data
 #
-# $wolfssl_lib_pat: pattern for .o files
+# $wolfssl_lib_pat: pattern for finding .o files
 #
 # clobbers server_pid, num_connections, num_bytes
 #
@@ -272,24 +266,17 @@ generate() {
 
     # take down file data
     find ./ -type f -name "$wolfssl_lib_pat" -exec du -b {} + \
-        | awk  '{ sub(".*/", "", $2); print $1, "B", $2 }' OFS="\t"
+        | awk  '{ sub(".*/", "", $2); print $1, "B", $2 }' OFS="\t" FS="\t"
 
     # take down algorithm benchmark data
     ./wolfcrypt/benchmark/benchmark \
-        | awk  'function snipe_num(n)
-                {
-                    # single out numbers
-                    split($0, a, /[^0-9.]+/)
-                    return a[n]
-                }
-                function snipe_name()
-                {
+        | awk  'function snipe_name() {
                     # use numbers (and surrounding spaces) to break up text
                     split($0, a, /[[:space:]]*[0-9.]+[[:space:]]*/)
                     return $1" "a[2]
                 }
-                /Cycles/   { print snipe_num(5), "cpB", $1 }
-                /ops\/sec/ { print snipe_num(6), "ops/s", snipe_name() }
+                /Cycles/   { print $(NF-0), "cpB", $1 }
+                /ops\/sec/ { print $(NF-1), "ops/s", snipe_name() }
                ' OFS="\t"
 
     # take down connection data
@@ -334,7 +321,7 @@ main() {
 
         # make a base_file with a name that won't conflict with anything
         # @temporary: I'm told mktemp is not reliable
-        base_file="$(mktemp "$data/XXXXXX")"
+        base_file="$(mktemp "${data:?}/XXXXXX")"
         git checkout "$baseline_commit"
         ./autogen.sh
         ./configure "$@"
@@ -354,7 +341,7 @@ main() {
         ./configure "$@"
         make
 
-        cur_file="$work/current"
+        cur_file="${work:?}/current"
 
         echo "[ $1 ]" >"$cur_file"
         generate >>"$cur_file" 2>&4
@@ -465,19 +452,20 @@ while true
 do
     case "$1" in
         '-u'|'-t')
-            # @temporary: no way to distinguish -u from -t: they have purely
-            # semantic meaning
+            case "$1" in
+                '-u') type="unit";;
+                '-t') type="test";;
+            esac
 
             # check the argument format
-            if ! echo "$2" | grep -q '^[a-zA-Z0-9_ /-]\+=[+-]\?[0-9.]\+%\?$'
+            if ! echo "$2" | grep -q '^[^|=]\+=[+-]\?[0-9.]\+%\?$'
             then
-                # @temporary: this isn't a very helpful error message, is it.
+                # @temporary: this isn't a very helpful error message, is it?
                 echo "Error: $1$2: invalid"
-                shift 2
-                continue
+            else
+                # use '=' as the new '\t' and '|' as the new '\n'
+                thresholds="${thresholds-}$type=$2|"
             fi
-
-            thresholds="${thresholds:-|}$2|"
             shift 2
             ;;
         '-T'|'--threshold')
@@ -537,12 +525,12 @@ fi
     mkdir -p "$data"
 
     # get wolfSSL if neccesary and cd into it
-    if [ ! -d "$dir/wolfssl" ]
+    if [ ! -d "${dir:?}/wolfssl" ]
     then
-        git clone "$wolfssl_url" -b "$wolfssl_branch" "$dir/wolfssl"
-        cd "$dir/wolfssl" || exit 255
+        git clone "$wolfssl_url" -b "$wolfssl_branch" "${dir:?}/wolfssl"
+        cd "${dir:?}/wolfssl" || exit 255
     else
-        cd "$dir/wolfssl" || exit 255
+        cd "${dir:?}/wolfssl" || exit 255
         git pull --force
     fi
 
@@ -557,14 +545,15 @@ fi
     fi
 
     # clean data directory and identify database
-    rm -rf "$data:?"/*
-    file="$store/$baseline_commit_abs"
+    rm -rf "${data:?}"/*
+    file="${store:?}/${baseline_commit_abs:?}"
 
     # open the database if it exists
     if [ -f "$file" ]
     then
         # split up the database into individual files per configuration
-        csplit -q -z -n 6 -f "$data/" "$file" '/\[ .* \]/' '{*}'
+        # @TODO: is csplit portable?
+        csplit -q -z -n 6 -f "${data:?}/" "$file" '/\[ .* \]/' '{*}'
     fi
 
     echo ""
@@ -598,7 +587,7 @@ exec <&5 5<&-
 rm -f "$input_file"
 
 { # close database
-    cat "$data"/* >"$store/$baseline_commit_abs"
+    cat "$data"/* >"${store:?}/${baseline_commit_abs:?}"
     rm -rf "$work"/data
 } >&3 2>&4
 
