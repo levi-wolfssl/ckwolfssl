@@ -1,5 +1,7 @@
 #!/bin/dash
+# shellcheck shell=dash
 # @TODO: change "dash" above to be "sh"; it is as it is now for local testing
+
 # Copyright (C) 2006-2017 wolfSSL Inc.
 #
 # This file is part of wolfSSL.
@@ -33,6 +35,7 @@ config_file=${CONFIG_FILE:-config.txt}
 # global internal variables
 work=${dir}/.tmp/${name}
 store=${dir}/.cache/${name}
+prefix=${dir}/.local
 data=${work}/data
 wolfssl_url="https://github.com/wolfssl/wolfssl"
 wolfssl_branch="master"
@@ -41,6 +44,9 @@ server_ready=/tmp/wolfssl_server_ready
 input_file=${work}/cleaned_config
 unset failed
 ret=0
+
+# modify an environment variable
+export LD_LIBRARY_PATH=${prefix}/lib
 
 # flags with default values
 default_threshold=110%
@@ -57,12 +63,17 @@ unset thresholds
 
 ###############################################################################
 # cleanup function; allways called on exit
+#
+# $server_ready: server ready file
+# $server_pid:   server PID
+# $oldPWD:       where to return to
+#
 ###############################################################################
 cleanup() {
     # @temporary: keep $work alive so that we can scrutinize it
     #rm -rf "$work"
     rm -f "$server_ready"
-    [ "$PWD" = "${dir:?}/wolfssl" ] && git checkout --quiet "$current_commit"
+    [ "$PWD" = "${dir?}/wolfssl" ] && git checkout --quiet "$current_commit"
     if [ -n "$server_pid" ]
     then
         kill "$server_pid"
@@ -324,8 +335,9 @@ main() {
         base_file="$(mktemp "${data:?}/XXXXXX")"
         git checkout "$baseline_commit"
         ./autogen.sh
-        ./configure "$@"
+        ./configure "$@" --prefix=${prefix}
         make
+        make install
 
         echo "[ $1 ]" >"$base_file"
         generate >>"$base_file" 2>&4
@@ -525,12 +537,12 @@ fi
     mkdir -p "$data"
 
     # get wolfSSL if neccesary and cd into it
-    if [ ! -d "${dir:?}/wolfssl" ]
+    if [ ! -d "${dir?}/wolfssl" ]
     then
-        git clone "$wolfssl_url" -b "$wolfssl_branch" "${dir:?}/wolfssl"
-        cd "${dir:?}/wolfssl" || exit 255
+        git clone "$wolfssl_url" -b "$wolfssl_branch" "${dir?}/wolfssl"
+        cd "${dir?}/wolfssl" || exit 255
     else
-        cd "${dir:?}/wolfssl" || exit 255
+        cd "${dir?}/wolfssl" || exit 255
         git pull --force
     fi
 
