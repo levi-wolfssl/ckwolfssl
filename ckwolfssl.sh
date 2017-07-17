@@ -86,15 +86,16 @@ cleanup() {
 ###############################################################################
 # Report errors
 #
-# $num_failed: number of errors
-# $failed:     errors to report
+# $1: number of exceeded thresholds
+#
+# $failed: errors to report
 #
 # prints report
 #
 # returns 0 if report was made, 1 if no report was made
 ###############################################################################
 report() {
-    [ "$num_failed" -eq 0 ] && return 1
+    [ "$1" -eq 0 ] && return 1
 
     # print this divider only if we are in verbose mode
     cat >&3 <<END
@@ -103,12 +104,14 @@ END
     cat <<END
 Thesholds exceeded: $1
 
-$(echo "$failed" | awk 'NF==4 { print $1, $2, $3, $4 }' RS=";" FS=":" OFS="\t")
+$(echo "$failed" | awk 'NF==3 { print $1, $2, $3 }' RS=";" FS=":" OFS="\t")
 
 config:
 $(./config.status --config)
 ===============================================================================
 END
+#$(echo "$failed" \
+#    | awk 'NF==3 { for (i=1; i<=NF; ++i) print $i }' RS=";" FS=":" OFS="\t")
 
 return 0
 }
@@ -189,22 +192,24 @@ value_for() {
 threshold_to_abs() {
     case "$1" in
         ### NOTE: #############################################################
-        # ${parameter#word} will remove the leading word from the parameter
-        # ${parameter%word} will remove the trailing word from the parameter
+        # ${parameter#word} will remove the word from the front of parameter
+        # ${parameter%word} will remove the word from the end of parameter
+        #
+        # Also, I'm using awk for the math because I like how it prints its
+        # numbers.
         #
         [+-]*%) # threshold is a relative percentage
             [ -z "$2" ] && return 1
             abs=${1#"+"}
-            abs=$(awk "BEGIN {print ${2} * (100 + ${abs%"%"}) / 100}")
-            unset intermediate
+            abs=$(awk "BEGIN { print ${2} * (100 + ${abs%"%"}) / 100 }")
             ;;
         *%) # threshold is an absolute percentage
             [ -z "$2" ] && return 1
-            abs=$(awk "BEGIN {print ${2} * ${1%"%"} / 100}")
+            abs=$(awk "BEGIN { print ${2} * ${1%"%"} / 100 }")
             ;;
         [+-]*) # threshold is a relative value
             [ -z "$2" ] && return 1
-            abs=$(awk "BEGIN {print ${2} * ${1#"+"} / 100}")
+            abs=$(awk "BEGIN { print ${2} + ${1#"+"} }")
             ;;
         *) # threshold is an absolute value
             abs=${1}
@@ -338,21 +343,18 @@ generate() {
 ###############################################################################
 main() {
     num_failed=0
-    failed="excess:unit:thresh.:test;" # preload with a header
+    failed="actual:target:test;" # preload with a header
 
     # find the file representing this configuration
     base_file="$(grep -lr "[ $1 ]" "$data")"
-    if [ -z "$base_file" ] || [ "$regenerate" = "yes" ]
+    if [ -z "$base_file" ]
     then
         # generate baseline data for $config
         echo "INFO: no stored configuration; generating..."
 
-        if [ -z "$base_file" ]
-        then
-            # make a base_file with a name that won't conflict with anything
-            # @temporary: I'm told mktemp is not reliable
-            base_file="$(mktemp "${data:?}/XXXXXX")"
-        fi
+        # make a base_file with a name that won't conflict with anything
+        # @temporary: I'm told mktemp is not reliable
+        base_file="$(mktemp "${data:?}/XXXXXX")"
 
         git checkout "$baseline_commit"
         ./autogen.sh
@@ -418,16 +420,20 @@ main() {
             | awk '{ print $1, $2, $3, $4, $5, $6 }' FS=":" OFS="\t" >&3
 
         # only do the math if it makes sense to
-        [ -z "$max" ] && continue
+        [ -z "$max"       ] && continue
         [ -z "$cur_value" ] && continue
 
+        report_value=$(awk "BEGIN {OFMT=\"%.2f\"
+                                   print ($cur_value / $base_value)*100}")%
+        report_threshold=$(awk "BEGIN {OFMT=\"%.2f\"
+                                       print ($max / $base_value)*100}")%
+
         # use awk for math because I like how it prints numbers
-        excess=$(awk "BEGIN {print ($cur_value - $max)}")
         exceeded=$(awk "BEGIN {print ($cur_value > $max)}")
         if [ "$exceeded" -eq 1 ]
         then
             num_failed=$((num_failed + 1))
-            failed="${failed}$excess:$unit:$threshold:$each;"
+            failed="${failed}$report_value:$report_threshold:$each;"
         fi
     done
 
@@ -590,8 +596,8 @@ fi
     rm -rf "${data:?}"/*
     file="${store:?}/${baseline_commit_abs:?}"
 
-    # open the database if it exists
-    if [ -f "$file" ]
+    # open the database if it exists and we don't want to regenerate it
+    if [ -f "$file" ] && [ "$regenerate" != "yes" ]
     then
         # split up the database into individual files per configuration
         # @TODO: is csplit portable?
@@ -620,6 +626,7 @@ exec 5<&0 <"$input_file"
 # read from the config database (note redirections above)
 while read -r config
 do
+    echo "INFO: Starting new test."
     # @temporary: prepend CC=clang to all configs
     # shellcheck disable=SC2086
     main CC=clang ${config}
