@@ -21,7 +21,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1335, USA
 ###############################################################################
 trap 'exit 255' INT QUIT
-trap 'cleanup' EXIT
+trap 'cleanup >/dev/null 2>&1' EXIT
 
 # cleaned version of this script's name
 name=$(basename -s .sh "$0")
@@ -40,26 +40,27 @@ data=${work}/data
 wolfssl_url="https://github.com/wolfssl/wolfssl"
 wolfssl_branch="master"
 wolfssl_lib_pat="src_libwolfssl_la-*.o"
-server_ready=/tmp/wolfssl_server_ready
+server_ready=${work}/wolfssl_server_ready
 input_file=${work}/cleaned_config
 unset failed
 ret=0
 
 # modify an environment variable
-export LD_LIBRARY_PATH=${prefix}/lib
+export LD_LIBRARY_PATH=${prefix}/lib${LD_LIBRARY_PATH+:}$LD_LIBRARY_PATH
 
 # flags with default values
 default_threshold=110%
 config_database=${config_dir}/${config_file}
-current_commit=$(git symbolic-ref --short HEAD || git rev-parse --short HEAD)
 
 # flags without default values
 unset verbose
+unset current_commit
 unset baseline_commit
 unset baseline_commit_abs
 unset config
 unset tests
 unset thresholds
+unset regenerate
 
 ###############################################################################
 # cleanup function; allways called on exit
@@ -74,7 +75,7 @@ cleanup() {
     #rm -rf "$work"
     rm -f "$server_ready"
     [ "$PWD" = "${dir?}/wolfssl" ] && git checkout --quiet "$current_commit"
-    if [ -n "$server_pid" ]
+    if pid p "$server_pid" >/dev/null 2>&1
     then
         kill "$server_pid"
         wait "$server_pid"
@@ -122,10 +123,10 @@ return 0
 #
 # prints the threshold
 #
-# returns 0 if the threshold exists, non-zero if it does not
+# returns 0
 ###############################################################################
 threshold_for() {
-    # TODO: there's probably a more robust way to do this
+    # @temporary: there's probably a more robust way to do this
     case "$thresholds" in
         *"test=$1="*)
             echo "$thresholds" \
@@ -217,9 +218,11 @@ threshold_to_abs() {
 ###############################################################################
 # abstraction wrapper that makes the client and server behave as one
 #
-# $@: arguments to pass to the client and server (yes, to each!)
+# $1: arguments to pass to the server (they will be expanded!)
+# $2: arguments to pass to the client (they will be expanded!)
+# $3: arguments to pass to both (they will be expanded!)
 #
-# $server_ready: location of where the server_ready file is
+# $server_ready: location of where the server_ready file is to be placed
 #
 # prints raw client/server output
 #
@@ -234,28 +237,42 @@ client_server() {
     server_output=${work}/server_out
     client_output=${work}/client_out
 
-    ./examples/server/server "$@" >"$server_output" 2>&1 &
+    # shellcheck disable=2086
+    ./examples/server/server $1 $3 -R "$server_ready" >"$server_output" 2>&1 &
     server_pid=$!
 
     counter=0
     echo "Waiting for server to be ready..." >&3
-    until [ -s /tmp/wolfssl_server_ready ] || [ $counter -gt 20 ]
+    until [ -s "$server_ready" ] || [ $counter -gt 19 ]
     do
-        printf "%2d tick...\n" $counter >&3
         sleep 0.1
         counter=$((counter+ 1))
     done
 
-    ./examples/client/client "$@" >"$client_output" 2>&1
+    if pid p $server_pid >/dev/null 2>&1
+    then
+        echo "ERROR: Server ready file never appeared."
+        kill $server_pid
+        wait $server_pid
+        return 1
+    elif [ ! -s "$server_ready" ]
+    then
+        echo "ERROR: Server failed to start."
+        return 1
+    fi >&3
+
+    # shellcheck disable=2086
+    ./examples/client/client $2 $3 >"$client_output" 2>&1
     client_return=$?
 
     wait "$server_pid"
     server_return=$?
+    unset server_pid
+    rm -f "$server_ready"
 
-    [ $server_return -eq 0 ] && cat "$server_output" || return 1
-    [ $client_return -eq 0 ] && cat "$client_output" || return 2
-
-    rm -f "$server_output" "$client_output" "$server_ready"
+    cat "$server_output" "$client_output"
+    [ $server_return -ne 0 ] && return 1
+    [ $client_return -ne 0 ] && return 2
     return 0
 }
 
@@ -291,11 +308,11 @@ generate() {
                ' OFS="\t"
 
     # take down connection data
-    client_server -C $num_conn -p 11114 \
+    client_server "-C $num_conn" "-b $num_conn" "-p 11114" \
         | awk  '/wolfSSL_connect/ { print $4, "ms", "connections" }' OFS="\t"
 
     # take down throughput data
-    client_server -N -B $num_bytes -p 11115 \
+    client_server "" "" "-N -B $num_bytes -p 11115" \
         | awk  'BEGIN       { prefix="ERROR" }
                 /Benchmark/ { prefix=$2 }
                 /\(.*\)/    { print $5, $6, prefix" "$2 }
@@ -325,19 +342,23 @@ main() {
 
     # find the file representing this configuration
     base_file="$(grep -lr "[ $1 ]" "$data")"
-    if [ -z "$base_file" ]
+    if [ -z "$base_file" ] || [ "$regenerate" = "yes" ]
     then
         # generate baseline data for $config
         echo "INFO: no stored configuration; generating..."
 
-        # make a base_file with a name that won't conflict with anything
-        # @temporary: I'm told mktemp is not reliable
-        base_file="$(mktemp "${data:?}/XXXXXX")"
+        if [ -z "$base_file" ]
+        then
+            # make a base_file with a name that won't conflict with anything
+            # @temporary: I'm told mktemp is not reliable
+            base_file="$(mktemp "${data:?}/XXXXXX")"
+        fi
+
         git checkout "$baseline_commit"
         ./autogen.sh
-        ./configure "$@" --prefix=${prefix}
+        ./configure "$@" #--prefix="${prefix}"
         make
-        make install
+        #make install
 
         echo "[ $1 ]" >"$base_file"
         generate >>"$base_file" 2>&4
@@ -428,25 +449,26 @@ configuration against a previous version.
       --tests=LIST          comma separated list of tests to perform
   -c, --baseline=COMMIT     commit to treat as baseline
   -f, --file=FILE           file from which to read configurations
+  -g, --generate            always generate baseline data, overwriting existing
 
  Thresholds:
-  -T, --threshold=THRESHOLD default threshold
+  -T, --threshold=THRESHOLD default threshold, superseeded by -u and -t
   -uUNIT=THRESHOLD          threshold for tests measured in UNIT
-  -tTEST=THRESHOLD          threshold specifically for TEST
+  -tTEST=THRESHOLD          threshold specifically for TEST (supersedes -u)
 
 THRESHOLD may be any integer/floating point number. If it ends with a percent
 sign (%), then it will be treated as a percentage of the stored value. If it
 starts with a plus or minus (+ or -), it is treated as a relative threshold.
 Otherwise, the value of THRESHOLD is treated as an absolute value
 
-UNIT and TEST are case sensitive.
+UNIT and TEST are case sensitive; they must match exactly with how they appear
+in the verbose output "Absolute values" table.
 HELP_BLOCK
     return 0
 }
 
-# @TODO: add flag that forces generation of baseline data
-optstring='hvc:T:u:t:f:'
-long_opts='help,verbose,tests:,baseline:,threshold:,file:'
+optstring='hvc:T:u:t:f:g'
+long_opts='help,verbose,tests:,baseline:,threshold:,file:,generate'
 
 # reorder the command line arguments to make it easier to parse
 opts=$(getopt -o "$optstring" -l "$long_opts" -n "$0" -- "$@")
@@ -465,8 +487,8 @@ do
     case "$1" in
         '-u'|'-t')
             case "$1" in
-                '-u') type="unit";;
-                '-t') type="test";;
+                '-u') type="unit" ;;
+                '-t') type="test" ;;
             esac
 
             # check the argument format
@@ -483,6 +505,10 @@ do
         '-T'|'--threshold')
             default_threshold="$2"
             shift 2
+            ;;
+        '-g'|'--generate')
+            regenerate=yes
+            shift
             ;;
         '--tests')
             tests="$2"
@@ -545,6 +571,10 @@ fi
         cd "${dir?}/wolfssl" || exit 255
         git pull --force
     fi
+
+    # get current commit
+    current_commit=$(git symbolic-ref --short HEAD \
+                   ||git rev-parse --short HEAD)
 
     # get latest commit
     if [ -z "$baseline_commit" ]
