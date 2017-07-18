@@ -1,6 +1,5 @@
-#!/bin/dash
+#!/bin/sh
 # shellcheck shell=dash
-# @TODO: change "dash" above to be "sh"; it is as it is now for local testing
 
 # Copyright (C) 2006-2017 wolfSSL Inc.
 #
@@ -102,7 +101,7 @@ report() {
 ===============================================================================
 END
     cat <<END
-Thesholds exceeded: $1
+Thresholds exceeded: $1
 
 $(echo "$failed" | awk 'NF==3 { print $1, $2, $3 }' RS=";" FS=":" OFS="\t")
 
@@ -343,7 +342,7 @@ generate() {
 ###############################################################################
 main() {
     num_failed=0
-    failed="actual:target:test;" # preload with a header
+    failed="actual:thresh.:test;" # preload a header
 
     # find the file representing this configuration
     base_file="$(grep -lr "[ $1 ]" "$data")"

@@ -14,11 +14,11 @@ error /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tERROR$/
 
 warn /^---\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
 warn /^[^\t\n]*\t---\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
-warn /^[^\t\n]*\t[[^\t\n]*\tN\/A\t[^\t\n]*\t[^\t]*$/
+warn /^[^\t\n]*\t[^\t\n]*\tN\/A\t[^\t\n]*\t[^\t]*$/
 
 # Mark the report
-start /^Thresholds exceeded \d+ times?$/
-info /^actual\ttarget\ttest$/
+start /^Thresholds exceeded: \d+$/
+info /^actual\tthresh.\ttest$/
 error /^[0-9.]+%\t[0-9.]+%\t[^\t\n]+$/
 info /^Configuration:$/
 
