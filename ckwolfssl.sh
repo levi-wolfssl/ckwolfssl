@@ -105,8 +105,7 @@ Thresholds exceeded: $1
 
 $(echo "$failed" | awk 'NF==3 { print $1, $2, $3 }' RS=";" FS=":" OFS="\t")
 
-config:
-$(./config.status --config)
+config: $(./config.status --config)
 ===============================================================================
 END
 #$(echo "$failed" \

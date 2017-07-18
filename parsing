@@ -6,21 +6,22 @@ start /^Info: Starting new test\.$/
 # Mark the absolute values tables
 start /^Absolute values:$/
 # the line below should match every line in the absolute values table:
-# /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
+# /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t]*\t[^\t]*$/
+# It may be used as a template for this sort of thing
 
-error /^[^\t\n]*\t[^\t\n]*\tERROR\t[^\t\n]*\t[^\t]*$/
-error /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tERROR\t[^\t]*$/
-error /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tERROR$/
+error /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tERROR\t[^\t\n]*\t[^\t]*$/
+error /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tERROR\t[^\t]*$/
+error /^[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\tERROR$/
 
-warn /^---\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
-warn /^[^\t\n]*\t---\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
-warn /^[^\t\n]*\t[^\t\n]*\tN\/A\t[^\t\n]*\t[^\t]*$/
+warn /^---\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
+warn /^[^\t\n]*\t---\t[^\t\n]*\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
+warn /^[^\t\n]*\t[^\t\n]*\tN\/A\t[^\t\n]*\t[^\t\n]*\t[^\t]*$/
 
 # Mark the report
 start /^Thresholds exceeded: \d+$/
-info /^actual\tthresh.\ttest$/
+info  /^actual\tthresh.\ttest$/
 error /^[0-9.]+%\t[0-9.]+%\t[^\t\n]+$/
-info /^Configuration:$/
+info  /^config: .*$/
 
 # generic things
 info  /INFO:/
