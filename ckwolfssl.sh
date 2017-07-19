@@ -231,9 +231,9 @@ threshold_to_abs() {
 ###############################################################################
 # abstraction wrapper that makes the client and server behave as one
 #
-# $1: arguments to pass to the server (they will be expanded!)
-# $2: arguments to pass to the client (they will be expanded!)
-# $3: arguments to pass to both (they will be expanded!)
+# $1: arguments to pass to both (they will be expanded!)
+# $2: arguments to pass to the server (they will be expanded!) (optional)
+# $3: arguments to pass to the client (they will be expanded!) (optional)
 #
 # $server_ready: location of where the server_ready file is to be placed
 #
@@ -251,7 +251,7 @@ client_server() {
     client_output=${work}/client_out
 
     # shellcheck disable=2086
-    ./examples/server/server $1 $3 -R "$server_ready" >"$server_output" 2>&1 &
+    ./examples/server/server ${2-} $1 -R "$server_ready" >"$server_output" 2>&1 &
     server_pid=$!
 
     counter=0
@@ -273,9 +273,10 @@ client_server() {
         echo "ERROR: Server failed to start."
         return 1
     fi >&3
+    echo "Server reached." >&3
 
     # shellcheck disable=2086
-    ./examples/client/client $2 $3 >"$client_output" 2>&1
+    ./examples/client/client ${3-} $1 >"$client_output" 2>&1
     client_return=$?
 
     wait "$server_pid"
@@ -310,23 +311,31 @@ generate() {
         | awk  '{ sub(".*/", "", $2); print $1, "B", $2 }' OFS="\t" FS="\t"
 
     # take down algorithm benchmark data
-    # @TODO: run the benchmark several times and take averages
-    ./wolfcrypt/benchmark/benchmark \
-        | awk  'function snipe_name() {
-                    # use numbers (and surrounding spaces) to break up text
-                    split($0, a, /[[:space:]]+[0-9.]+[[:space:]]+/)
-                    return a[1]" "a[2]
-                }
-                /Cycles/   { print $(NF-0), "cpB", $1 }
-                /ops\/sec/ { print $(NF-1), "ops/s", snipe_name() }
-               ' OFS="\t"
+    counter=0
+    while [ $counter -lt 10 ]
+    do
+        counter=$((counter+1))
+        ./wolfcrypt/benchmark/benchmark \
+            | awk  'function snipe_name() {
+                        # use numbers (and surrounding spaces) to break up text
+                        split($0, a, /[[:space:]]+[0-9.]+[[:space:]]+/)
+                        return a[1]" "a[2]
+                    }
+                    /Cycles/   { print $(NF-0), "cpB", $1 }
+                    /ops\/sec/ { print $(NF-1), "ops/s", snipe_name() }
+                   ' OFS="\t"
+    done \
+        | awk  '    { s[$3]+=$1; u[$3]=$2; ++c[$3] }
+                END { for (n in sum) print (s[n]/c[n]), u[n], n }
+               ' OFS="\t" FS="\t" \
+        | sort -t "$(printf "\t")" -k 2,3
 
     # take down connection data
-    client_server "-C $num_conn" "-b $num_conn" "-p 11114" \
+    client_server "-p 11114" "-C $num_conn" "-b $num_conn" \
         | awk  '/wolfSSL_connect/ { print $4, "ms", "connections" }' OFS="\t"
 
     # take down throughput data
-    client_server "" "" "-N -B $num_bytes -p 11115" \
+    client_server "-N -B $num_bytes -p 11115" \
         | awk  'BEGIN       { prefix="ERROR" }
                 /Benchmark/ { prefix=$2 }
                 /\(.*\)/    { print $5, $6, prefix" "$2 }
@@ -355,14 +364,14 @@ main() {
     failed="actual:thresh.:test;" # preload a header
 
     # find the file representing this configuration
-    base_file="$(grep -lr "[ $* ]" "$data")"
+    base_file="$(grep -Flxr "[ $* ]" "$data")"
     if [ -z "$base_file" ]
     then
         # generate baseline data for $config
         echo "INFO: no stored configuration; generating..."
 
         # make a base_file with a name that won't conflict with anything
-        # @temporary: I'm told mktemp is not reliable
+        # @temporary: I'm told mktemp may not be portable
         base_file="$(mktemp "${data:?}/XXXXXX")"
 
         git checkout "$baseline_commit"
@@ -390,7 +399,7 @@ main() {
         generate >>"$cur_file" 2>&4
     } >&3 2>&4
 
-    # generate a list of tests if necessary
+    # generate a value for $tests only if $tests is unset
     if [ -z "${tests+y}" ]
     then
         tests="$(cut -sf 3 <"$cur_file" | paste -sd ,)"
@@ -415,7 +424,7 @@ main() {
         threshold=$(threshold_for "$each" "$unit")
         max=$(threshold_to_abs "$threshold" "$base_value")
 
-        # build up a line of colon-delimited values
+        # build up a line of colon-delimited values (or their default)
         line="${cur_value:-"---"}"
         line="${line}:${base_value:-"---"}"
         line="${line}:${max:-"N/A"}"
@@ -427,7 +436,8 @@ main() {
         echo "$line" \
             | awk '{ print $1, $2, $3, $4, $5, $6 }' FS=":" OFS="\t" >&3
 
-        # only do the math if it makes sense to
+        # only do the math if it makes sense to. Counterintuitively, here
+        # 'continue' means don't do the math
         [ -z "$max"       ] && continue
         [ -z "$cur_value" ] && continue
 
@@ -659,7 +669,8 @@ rm -f "$input_file"
 
 { # close database
     cat "$data"/* >"${store:?}/${baseline_commit_abs:?}"
-    rm -rf "$work"/data
+    # @temporary: leave the data in place for inspection
+    #rm -rf "$work"/data
 } >&3 2>&4
 
 cd "$oldPWD" || exit 255
