@@ -22,6 +22,16 @@
 trap 'exit 255' INT QUIT
 trap 'cleanup >/dev/null 2>&1' EXIT
 
+### NOTE: #####################################################################
+# Be very carful if you intend to modify the output format of this script:
+# there are at least two different outside systems that I know of that expect
+# the output to be formated exactly how it is, especially the headdings,
+# tab-separated tables, and exactly 79-character long equals sign dividers.
+# Those two outside systems would both be Jenkins plugins: the Log Parser
+# (whose rules are in the local 'parse' file) and the Editable Email
+# Notification (whole rules are on the Jenkins master machine)
+#
+
 # cleaned version of this script's name
 name=$(basename -s .sh "$0")
 
@@ -293,18 +303,19 @@ client_server() {
 generate() {
     # @TODO: add flags to control these two variables
     num_conn=128
-    num_bytes=8192 # 8KiB
+    num_bytes=1073741824 # 1GiB or 1024MiB
 
     # take down file data
     find ./ -type f -name "$wolfssl_lib_pat" -exec du -b {} + \
         | awk  '{ sub(".*/", "", $2); print $1, "B", $2 }' OFS="\t" FS="\t"
 
     # take down algorithm benchmark data
+    # @TODO: run the benchmark several times and take averages
     ./wolfcrypt/benchmark/benchmark \
         | awk  'function snipe_name() {
                     # use numbers (and surrounding spaces) to break up text
-                    split($0, a, /[[:space:]]*[0-9.]+[[:space:]]*/)
-                    return $1" "a[2]
+                    split($0, a, /[[:space:]]+[0-9.]+[[:space:]]+/)
+                    return a[1]" "a[2]
                 }
                 /Cycles/   { print $(NF-0), "cpB", $1 }
                 /ops\/sec/ { print $(NF-1), "ops/s", snipe_name() }
@@ -344,7 +355,7 @@ main() {
     failed="actual:thresh.:test;" # preload a header
 
     # find the file representing this configuration
-    base_file="$(grep -lr "[ $1 ]" "$data")"
+    base_file="$(grep -lr "[ $* ]" "$data")"
     if [ -z "$base_file" ]
     then
         # generate baseline data for $config
@@ -356,11 +367,10 @@ main() {
 
         git checkout "$baseline_commit"
         ./autogen.sh
-        ./configure "$@" #--prefix="${prefix}"
+        ./configure "$@"
         make
-        #make install
 
-        echo "[ $1 ]" >"$base_file"
+        echo "[ $* ]" >"$base_file"
         generate >>"$base_file" 2>&4
 
         git checkout "$current_commit"
@@ -376,7 +386,7 @@ main() {
 
         cur_file="${work:?}/current"
 
-        echo "[ $1 ]" >"$cur_file"
+        echo "[ $* ]" >"$cur_file"
         generate >>"$cur_file" 2>&4
     } >&3 2>&4
 
@@ -451,7 +461,8 @@ configuration against a previous version.
   -h, --help                display this help page then exit
   -v, --verbose             display extra information
       --tests=LIST          comma separated list of tests to perform
-  -c, --baseline=COMMIT     commit to treat as baseline
+  -b, --baseline=COMMIT     commit to use as the baseline
+  -c, --commit=COMMIT       commit to test
   -f, --file=FILE           file from which to read configurations
   -g, --generate            always generate baseline data, overwriting existing
 
@@ -471,8 +482,8 @@ HELP_BLOCK
     return 0
 }
 
-optstring='hvc:T:u:t:f:g'
-long_opts='help,verbose,tests:,baseline:,threshold:,file:,generate'
+optstring='hvb:T:u:t:f:gc:'
+long_opts='help,verbose,tests:,baseline:,threshold:,file:,generate,commit'
 
 # reorder the command line arguments to make it easier to parse
 opts=$(getopt -o "$optstring" -l "$long_opts" -n "$0" -- "$@")
@@ -527,8 +538,12 @@ do
             fi
             shift 2
             ;;
-        '-c'|'--baseline')
+        '-b'|'--baseline')
             baseline_commit="$2"
+            shift 2
+            ;;
+        '-c'|'--commit')
+            current_commit="$2"
             shift 2
             ;;
         '-v'|'--verbose')
@@ -577,8 +592,11 @@ fi
     fi
 
     # get current commit
-    current_commit=$(git symbolic-ref --short HEAD \
-                   ||git rev-parse --short HEAD)
+    if [ -z "$current_commit" ]
+    then
+        current_commit=$(git symbolic-ref --short HEAD \
+                       ||git rev-parse --short HEAD)
+    fi
 
     # get latest commit
     if [ -z "$baseline_commit" ]
@@ -617,6 +635,12 @@ fi
 # finally restoring &0 and closing &5 is the most POSIXly correct way of doing
 # this such that I can still modify the $ret variable.
 #
+# For any future person brave enough to untangle this mess, there's potential
+# in redirecting the report, using echo to report a status value, and piping
+# those echos into another process for processing. Perhaps even wrapping the
+# entire thing in a process substitution (the $(expr) construct) to capture an
+# echoed return value is an option. For now, it works despite the convolution.
+#
 
 # remove any line where '#' is the first non-white space character
 grep -v '^\s*#' "$config_database" >"$input_file"
@@ -624,7 +648,7 @@ exec 5<&0 <"$input_file"
 # read from the config database (note redirections above)
 while read -r config
 do
-    echo "INFO: Starting new test."
+    echo "INFO: Starting new test." >&3
     # @temporary: prepend CC=clang to all configs
     # shellcheck disable=SC2086
     main CC=clang ${config}
