@@ -591,17 +591,18 @@ fi
     mkdir -p "$store"
     mkdir -p "$data"
 
-    # get wolfSSL if neccesary and cd into it
+    # get wolfSSL if necessary and cd into it
     if [ ! -d "${dir?}/wolfssl" ]
     then
         git clone "$wolfssl_url" -b "$wolfssl_branch" "${dir?}/wolfssl"
         cd "${dir?}/wolfssl" || exit 255
     else
         cd "${dir?}/wolfssl" || exit 255
+        [ -n "$current_commit" ] && git checkout "$current_commit"
         git pull --force
     fi
 
-    # get current commit
+    # get current commit if necessary
     if [ -z "$current_commit" ]
     then
         current_commit=$(git symbolic-ref --short HEAD \
