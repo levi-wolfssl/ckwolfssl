@@ -326,7 +326,7 @@ generate() {
                    ' OFS="\t"
     done \
         | awk  '    { s[$3]+=$1; u[$3]=$2; ++c[$3] }
-                END { for (n in sum) print (s[n]/c[n]), u[n], n }
+                END { for (n in s) print (s[n]/c[n]), u[n], n }
                ' OFS="\t" FS="\t" \
         | sort -t "$(printf "\t")" -k 2,3
 
@@ -468,13 +468,13 @@ Check the compile size and performance characteristics of wolfSSL for a known
 configuration against a previous version.
 
  Control:
-  -h, --help                display this help page then exit
-  -v, --verbose             display extra information
-      --tests=LIST          comma separated list of tests to perform
   -b, --baseline=COMMIT     commit to use as the baseline
   -c, --commit=COMMIT       commit to test
   -f, --file=FILE           file from which to read configurations
   -g, --generate            always generate baseline data, overwriting existing
+  -h, --help                display this help page then exit
+      --tests=LIST          comma separated list of tests to check
+  -v, --verbose             display extra information
 
  Thresholds:
   -T, --threshold=THRESHOLD default threshold, superseeded by -u and -t
@@ -486,8 +486,9 @@ sign (%), then it will be treated as a percentage of the stored value. If it
 starts with a plus or minus (+ or -), it is treated as a relative threshold.
 Otherwise, the value of THRESHOLD is treated as an absolute value
 
-UNIT and TEST are case sensitive; they must match exactly with how they appear
-in the verbose output "Absolute values" table.
+All input is case sensitive. The of units and tests are matched against their
+respective columns in the "Absolute values" table generated when -v is
+specified.
 HELP_BLOCK
     return 0
 }
