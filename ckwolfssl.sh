@@ -159,7 +159,7 @@ threshold_for() {
 # returns 0
 ###############################################################################
 unit_for() {
-    awk '$3 == str { print $1; exit }' FS="\t" str="$1" <"$2"
+    awk '$3 == str { print $2; exit }' FS="\t" str="$1" <"$2"
     return 0
 }
 
