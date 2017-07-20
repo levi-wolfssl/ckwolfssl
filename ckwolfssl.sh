@@ -48,7 +48,6 @@ wolfssl_url="https://github.com/wolfssl/wolfssl"
 wolfssl_branch="master"
 wolfssl_lib_pat="src_libwolfssl_la-*.o"
 server_ready=${work}/wolfssl_server_ready
-input_file=${work}/clean_config
 unset failed
 ret=0
 
@@ -86,6 +85,9 @@ cleanup() {
         wait "$server_pid"
     fi
     cd "$dir" || exit 255
+
+    # close &3 and &4
+    exec 3<&- 4<&-
 }
 
 ###############################################################################
@@ -649,9 +651,9 @@ fi
 # apparently that makes this entire while loop run in a subshell, meaning that
 # I would not be able to change the value of $ret from here. Similarly, in good
 # ol' sh, even doing redirection with '<' would put this loop into a subshell.
-# As such, the madness of saving &0 in &5, redirecting $tmp to be &0, then
-# finally restoring &0 and closing &5 is the most POSIXly correct way of doing
-# this such that I can still modify the $ret variable.
+# As such, the madness of saving &0 in &5, redirecting $config_database to be
+# &0, then finally restoring &0 and closing &5 is the most POSIXly correct way
+# of doing this such that I can still modify the $ret variable.
 #
 # For any future person brave enough to untangle this mess, there's potential
 # in redirecting the report, using echo to report a status value, and piping
@@ -660,20 +662,21 @@ fi
 # echoed return value is an option. For now, it works despite the convolution.
 #
 
-# remove any line where '#' is the first non-white space character
-grep -v '^\s*#' "$config_database" >"$input_file"
-exec 5<&0 <"$input_file"
-# read from the config database (note redirections above)
+# read from the config database (note the redirections)
+exec 5<&0 <"$config_database"
 while read -r config
 do
-    echo "INFO: Starting new test." >&3
-    # @temporary: prepend CC=clang to all configs
-    # shellcheck disable=SC2086
-    main CC=clang ${config}
-    report "$num_failed" && ret=1
+    # ignore lines with '#' as their first non-blank character
+    if ! echo "$config" | grep '\s*#'
+    then
+        echo "INFO: Starting new test." >&3
+        # @temporary: prepend CC=clang to all configs
+        # shellcheck disable=SC2086
+        main CC=clang ${config}
+        report "$num_failed" && ret=1
+    fi
 done
 exec <&5 5<&-
-rm -f "$input_file"
 
 # save to database
 if [ "$ephemeral" != yes ]
