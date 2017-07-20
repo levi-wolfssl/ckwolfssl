@@ -23,9 +23,9 @@ trap 'exit 255' INT QUIT
 trap 'cleanup >/dev/null 2>&1' EXIT
 
 ### NOTE: #####################################################################
-# Be very carful if you intend to modify the output format of this script:
+# Be very careful if you intend to modify the output format of this script:
 # there are at least two different outside systems that I know of that expect
-# the output to be formated exactly how it is, especially the headdings,
+# the output to be formated exactly how it is, especially the headings,
 # tab-separated tables, and exactly 79-character long equals sign dividers.
 # Those two outside systems would both be Jenkins plugins: the Log Parser
 # (whose rules are in the local 'parse' file) and the Editable Email
@@ -36,8 +36,7 @@ trap 'cleanup >/dev/null 2>&1' EXIT
 name=$(basename -s .sh "$0")
 
 # copies of environment variables, or fall back on defaults
-oldPWD=$PWD
-cd "$(dirname "$0")" && dir=${PWD:?} || exit 255
+dir=${PWD%/} # remove any trailing '/'
 config_dir=${CONFIG_DIR:-${dir}}
 config_file=${CONFIG_FILE:-config.txt}
 
@@ -68,11 +67,11 @@ unset regenerate
 unset ephemeral
 
 ###############################################################################
-# cleanup function; allways called on exit
+# cleanup function; always called on exit
 #
 # $server_ready: server ready file
 # $server_pid:   server PID
-# $oldPWD:       where to return to
+# $dir:          where to return to
 #
 ###############################################################################
 cleanup() {
@@ -85,7 +84,7 @@ cleanup() {
         kill "$server_pid"
         wait "$server_pid"
     fi
-    cd "$oldPWD" || exit 255
+    cd "$dir" || exit 255
 }
 
 ###############################################################################
@@ -124,7 +123,7 @@ return 0
 # $1: test name
 # $2: test unit
 #
-# $default_threshold: default threshold va/ue
+# $default_threshold: default threshold value
 #
 # prints the threshold
 #
@@ -348,8 +347,8 @@ generate() {
 # $baseline_commit: commit to use as baseline
 # $current_commit:  commit to return to when we're done
 #
-# clobers num_failed, failed, base_file, cur_file, oldIFS, threshold, value,
-#         unit, max
+# clobbers num_failed, failed, base_file, cur_file, oldIFS, threshold, value,
+#          unit, max
 #
 # returns number of exceeded tests (0 included)
 ###############################################################################
@@ -472,6 +471,10 @@ configuration against a previous version.
       --tests=LIST          comma separated list of tests to check
   -v, --verbose             display extra information
 
+To select a configuration file, the environment variables CONFIG_DIR and
+CONFIG_FILE are composed as \${CONFIG_DIR:-.}/\${CONFIG_FILE:-config.txt}. This
+means that by default the file ./config.txt will be used.
+
  Thresholds:
   -T, --threshold=THRESHOLD default threshold, superseeded by -u and -t
   -uUNIT=THRESHOLD          threshold for tests measured in UNIT
@@ -543,12 +546,11 @@ do
             shift 2
             ;;
         '-f'|'--file')
-            if [ "$2" = "-" ]
-            then
-                config_database="/proc/self/fd/0"
-            else
-                config_database="$2"
-            fi
+            case "$2" in
+                -)  config_database="/proc/self/fd/0" ;;
+                /*) config_database="$2" ;;
+                *)  config_database="${dir%/}/${2#./}" ;;
+            esac
             shift 2
             ;;
         '-b'|'--baseline')
@@ -650,13 +652,13 @@ fi
 # apparently that makes this entire while loop run in a subshell, meaning that
 # I would not be able to change the value of $ret from here. Similarly, in good
 # ol' sh, even doing redirection with '<' would put this loop into a subshell.
-# As such, the maddness of saving &0 in &5, redirecting $tmp to be &0, then
+# As such, the madness of saving &0 in &5, redirecting $tmp to be &0, then
 # finally restoring &0 and closing &5 is the most POSIXly correct way of doing
 # this such that I can still modify the $ret variable.
 #
 # For any future person brave enough to untangle this mess, there's potential
 # in redirecting the report, using echo to report a status value, and piping
-# those echos into another process for processing. Perhaps even wrapping the
+# those echoes into another process for processing. Perhaps even wrapping the
 # entire thing in a process substitution (the $(expr) construct) to capture an
 # echoed return value is an option. For now, it works despite the convolution.
 #
@@ -683,7 +685,5 @@ then
     # @temporary: leave the data in place for inspection
     #rm -rf "$work"/data
 fi >&3 2>&4
-
-cd "$oldPWD" || exit 255
 
 exit $ret
