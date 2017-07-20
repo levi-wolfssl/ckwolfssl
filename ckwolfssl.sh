@@ -65,6 +65,7 @@ unset baseline_commit_abs
 unset tests
 unset thresholds
 unset regenerate
+unset ephemeral
 
 ###############################################################################
 # cleanup function; allways called on exit
@@ -464,6 +465,7 @@ configuration against a previous version.
  Control:
   -b, --baseline=COMMIT     commit to use as the baseline
   -c, --commit=COMMIT       commit to test
+  -e, --ephemeral           don't save baseline data (implies -g)
   -f, --file=FILE           file from which to read configurations
   -g, --generate            always generate baseline data, overwriting existing
   -h, --help                display this help page then exit
@@ -487,8 +489,9 @@ HELP_BLOCK
     return 0
 }
 
-optstring='hvb:T:u:t:f:gc:'
-long_opts='help,verbose,tests:,baseline:,threshold:,file:,generate,commit'
+optstring="hvb:T:u:t:f:gc:e"
+long_opts="help,verbose,tests:,baseline:,threshold:,file:,generate,commit"
+long_opts="$long_opts,ephemeral"
 
 # reorder the command line arguments to make it easier to parse
 opts=$(getopt -o "$optstring" -l "$long_opts" -n "$0" -- "$@")
@@ -527,6 +530,11 @@ do
             shift 2
             ;;
         '-g'|'--generate')
+            regenerate=yes
+            shift
+            ;;
+        '-e'|'--ephemeral')
+            ephemeral=yes
             regenerate=yes
             shift
             ;;
@@ -632,6 +640,7 @@ fi
         echo "INFO: generating baseline data"
     fi
 
+    [ "$ephemeral" = "yes" ] && echo "INFO: generated data will be ephemeral"
     echo "INFO: current commit: '$current_commit'"
     echo "INFO: baseline commit: '$baseline_commit'"
 } >&3 2>&4
@@ -667,11 +676,13 @@ done
 exec <&5 5<&-
 rm -f "$input_file"
 
-{ # close database
+# save to database
+if [ "$ephemeral" != yes ]
+then
     cat "$data"/* >"${store:?}/${baseline_commit_abs:?}"
     # @temporary: leave the data in place for inspection
     #rm -rf "$work"/data
-} >&3 2>&4
+fi >&3 2>&4
 
 cd "$oldPWD" || exit 255
 
