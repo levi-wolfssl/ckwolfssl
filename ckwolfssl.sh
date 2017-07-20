@@ -48,13 +48,14 @@ wolfssl_url="https://github.com/wolfssl/wolfssl"
 wolfssl_branch="master"
 wolfssl_lib_pat="src_libwolfssl_la-*.o"
 server_ready=${work}/wolfssl_server_ready
-input_file=${work}/cleaned_config
+input_file=${work}/clean_config
 unset failed
 ret=0
 
 # flags with default values
 default_threshold=110%
 config_database=${config_dir}/${config_file}
+config_database=/proc/self/fd/0
 current_commit="master"
 
 # flags without default values
@@ -458,8 +459,8 @@ print_help() {
     # @TODO: review
     cat <<HELP_BLOCK
 Usage: $0 [OPTION]...
-Check the compile size and performance characteristics of wolfSSL for a known
-configuration against a previous version.
+Check the compile size and performance characteristics of wolfSSL against a
+previous version for configurations read from standard in.
 
  Control:
   -b, --baseline=COMMIT     commit to use as the baseline
@@ -470,10 +471,6 @@ configuration against a previous version.
   -h, --help                display this help page then exit
       --tests=LIST          comma separated list of tests to check
   -v, --verbose             display extra information
-
-To select a configuration file, the environment variables CONFIG_DIR and
-CONFIG_FILE are composed as \${CONFIG_DIR:-.}/\${CONFIG_FILE:-config.txt}. This
-means that by default the file ./config.txt will be used.
 
  Thresholds:
   -T, --threshold=THRESHOLD default threshold, superseeded by -u and -t
