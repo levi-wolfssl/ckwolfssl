@@ -44,7 +44,6 @@ config_file=${CONFIG_FILE:-config.txt}
 # global internal variables
 work=${dir}/.tmp/${name}
 store=${dir}/.cache/${name}
-prefix=${dir}/.local
 data=${work}/data
 wolfssl_url="https://github.com/wolfssl/wolfssl"
 wolfssl_branch="master"
@@ -54,19 +53,15 @@ input_file=${work}/cleaned_config
 unset failed
 ret=0
 
-# modify an environment variable
-export LD_LIBRARY_PATH=${prefix}/lib${LD_LIBRARY_PATH+:}$LD_LIBRARY_PATH
-
 # flags with default values
 default_threshold=110%
 config_database=${config_dir}/${config_file}
+current_commit="master"
 
 # flags without default values
 unset verbose
-unset current_commit
 unset baseline_commit
 unset baseline_commit_abs
-unset config
 unset tests
 unset thresholds
 unset regenerate
@@ -118,8 +113,6 @@ $(echo "$failed" | awk 'NF==3 { print $1, $2, $3 }' RS=";" FS=":" OFS="\t")
 config: $(./config.status --config)
 ===============================================================================
 END
-#$(echo "$failed" \
-#    | awk 'NF==3 { for (i=1; i<=NF; ++i) print $i }' RS=";" FS=":" OFS="\t")
 
 return 0
 }
@@ -141,11 +134,11 @@ threshold_for() {
     case "$thresholds" in
         *"test=$1="*)
             echo "$thresholds" \
-                | awk '$2 == str { print $3 }' RS="|" FS="=" str="$1"
+                | awk '$2 == str { print $3; exit }' RS="|" FS="=" str="$1"
             ;;
         *"unit=$2="*)
             echo "$thresholds" \
-                | awk '$2 == str { print $3 }' RS="|" FS="=" str="$2"
+                | awk '$2 == str { print $3; exit }' RS="|" FS="=" str="$2"
             ;;
         *)
             echo "$default_threshold"
@@ -166,7 +159,7 @@ threshold_for() {
 # returns 0
 ###############################################################################
 unit_for() {
-    grep "$1$" "$2" | cut -sf 2
+    awk '$3 == str { print $1; exit }' FS="\t" str="$1" <"$2"
     return 0
 }
 
@@ -181,7 +174,7 @@ unit_for() {
 # returns 0
 ###############################################################################
 value_for() {
-    grep "$1$" "$2" | cut -sf 1
+    awk '$3 == str { print $1; exit }' FS="\t" str="$1" <"$2"
     return 0
 }
 
@@ -191,7 +184,7 @@ value_for() {
 # $1: threshold
 # $2: relative value
 #
-# prints absolute value
+# prints absolute value or nothing if it cannot be calculated
 #
 # clobbers abs
 #
@@ -272,7 +265,7 @@ client_server() {
     then
         echo "ERROR: Server failed to start."
         return 1
-    fi >&3
+    fi >&4
     echo "Server reached." >&3
 
     # shellcheck disable=2086
@@ -368,7 +361,8 @@ main() {
     if [ -z "$base_file" ]
     then
         # generate baseline data for $config
-        echo "INFO: no stored configuration; generating..."
+        echo "INFO: collecting data for the baseline commit..."
+        [ "$regenerate" = "yes" ]
 
         # make a base_file with a name that won't conflict with anything
         # @temporary: I'm told mktemp may not be portable
@@ -380,7 +374,7 @@ main() {
         make
 
         echo "[ $* ]" >"$base_file"
-        generate >>"$base_file" 2>&4
+        generate >>"$base_file"
 
         git checkout "$current_commit"
 
@@ -396,7 +390,7 @@ main() {
         cur_file="${work:?}/current"
 
         echo "[ $* ]" >"$cur_file"
-        generate >>"$cur_file" 2>&4
+        generate >>"$cur_file"
     } >&3 2>&4
 
     # generate a value for $tests only if $tests is unset
@@ -446,7 +440,7 @@ main() {
         report_threshold=$(awk "BEGIN {OFMT=\"%.2f\"
                                        print ($max / $base_value)*100}")%
 
-        # use awk for math because I like how it prints numbers
+        # use awk for this check because it can handle ints *and* floats
         exceeded=$(awk "BEGIN {print ($cur_value > $max)}")
         if [ "$exceeded" -eq 1 ]
         then
@@ -518,7 +512,7 @@ do
             esac
 
             # check the argument format
-            if ! echo "$2" | grep -q '^[^|=]\+=[+-]\?[0-9.]\+%\?$'
+            if ! echo "$2" | grep -qx '[^|=]\+=[+-]\?[0-9]\+\(\.[0-9]\+\)\?%\?'
             then
                 # @temporary: this isn't a very helpful error message, is it?
                 echo "Error: $1$2: invalid"
@@ -570,7 +564,7 @@ do
             break
             ;;
         *)
-            echo "Error: internal to getopts!" >&2
+            echo "ERROR: internal to getopts!" >&2
             exit 255
             ;;
     esac
@@ -625,17 +619,21 @@ fi
     file="${store:?}/${baseline_commit_abs:?}"
 
     # open the database if it exists and we don't want to regenerate it
-    if [ -f "$file" ] && [ "$regenerate" != "yes" ]
+    if [ -f "$file" ] && [ "$regenerate" = "yes" ]
     then
+        echo "INFO: regenerating baseline data"
+    elif [ -f "$file" ] && [ "$regenerate" != "yes" ]
+    then
+        echo "INFO: using stored baseline data"
         # split up the database into individual files per configuration
-        # @TODO: is csplit portable?
+        # @TODO: is csplit portable? I can imagine an awk solution.
         csplit -q -z -n 6 -f "${data:?}/" "$file" '/\[ .* \]/' '{*}'
+    else
+        echo "INFO: generating baseline data"
     fi
 
-    echo ""
-    echo "INFO: current commit:  '$current_commit'"
+    echo "INFO: current commit: '$current_commit'"
     echo "INFO: baseline commit: '$baseline_commit'"
-    echo ""
 } >&3 2>&4
 
 ### NOTE: #####################################################################
