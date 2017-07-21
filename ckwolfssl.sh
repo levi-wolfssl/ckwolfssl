@@ -78,7 +78,7 @@ unset ephemeral
 cleanup() {
     rm -rf "$work"
     rm -f "$server_ready"
-    [ "$PWD" = "${dir?}/wolfssl" ] && git checkout --quiet "$current_commit"
+    [ "$PWD" = "${work?}/wolfssl" ] && git checkout --quiet "$current_commit"
     if pid p "$server_pid" >/dev/null 2>&1
     then
         kill "$server_pid"
@@ -607,12 +607,12 @@ fi
     mkdir -p "$data"
 
     # get wolfSSL if necessary and cd into it
-    if [ ! -d "${dir?}/wolfssl" ]
+    if [ ! -d "${work?}/wolfssl" ]
     then
-        git clone "$wolfssl_url" -b "$wolfssl_branch" "${dir?}/wolfssl"
-        cd "${dir?}/wolfssl" || exit 255
+        git clone "$wolfssl_url" -b "$wolfssl_branch" "${work?}/wolfssl"
+        cd "${work?}/wolfssl" || exit 255
     else
-        cd "${dir?}/wolfssl" || exit 255
+        cd "${work?}/wolfssl" || exit 255
         [ -n "$current_commit" ] && git checkout "$current_commit"
         git pull --force
     fi
