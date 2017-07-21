@@ -56,6 +56,7 @@ default_threshold=110%
 config_database=${config_dir}/${config_file}
 config_database=/proc/self/fd/0
 current_commit="master"
+fragile=yes
 
 # flags without default values
 unset verbose
@@ -466,19 +467,21 @@ Check the compile size and performance characteristics of wolfSSL against a
 previous version for configurations read from standard in.
 
  Control:
+  -a, --all                 always test every configuration
   -b, --baseline=COMMIT     commit to use as the baseline
   -c, --commit=COMMIT       commit to test
   -e, --ephemeral           don't save baseline data (implies -g)
   -f, --file=FILE           file from which to read configurations
+      --fragile             exit after the first failed test (default)
   -g, --generate            always generate baseline data, overwriting existing
   -h, --help                display this help page then exit
       --tests=LIST          comma separated list of tests to check
   -v, --verbose             display extra information
 
  Thresholds:
-  -T, --threshold=THRESHOLD default threshold, superseeded by -u and -t
+  -T, --threshold=THRESHOLD default threshold
   -uUNIT=THRESHOLD          threshold for tests measured in UNIT
-  -tTEST=THRESHOLD          threshold specifically for TEST (supersedes -u)
+  -tTEST=THRESHOLD          threshold specifically for TEST
 
 THRESHOLD may be any integer/floating point number. If it ends with a percent
 sign (%), then it will be treated as a percentage of the stored value. If it
@@ -492,9 +495,9 @@ HELP_BLOCK
     return 0
 }
 
-optstring="hvb:T:u:t:f:gc:e"
+optstring="hvb:T:u:t:f:gc:ea"
 long_opts="help,verbose,tests:,baseline:,threshold:,file:,generate,commit"
-long_opts="$long_opts,ephemeral"
+long_opts="$long_opts,ephemeral,all,fragile"
 
 # reorder the command line arguments to make it easier to parse
 opts=$(getopt -o "$optstring" -l "$long_opts" -n "$0" -- "$@")
@@ -563,6 +566,14 @@ do
             ;;
         '-v'|'--verbose')
             verbose=yes
+            shift
+            ;;
+        '-a'|'--all')
+            fragile=no
+            shift
+            ;;
+        '--fragile')
+            fragile=yes
             shift
             ;;
         '-h'|'--help')
@@ -674,7 +685,11 @@ do
         # @temporary: prepend CC=clang to all configs
         # shellcheck disable=SC2086
         main CC=clang ${config}
-        report "$num_failed" && ret=1
+        if report "$num_failed"
+        then
+            ret=1
+            [ "$fragile" = "yes" ] && break
+        fi
     fi
 done
 exec <&5 5<&-
