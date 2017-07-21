@@ -300,17 +300,17 @@ client_server() {
 generate() {
     # @TODO: add flags to control these two variables
     num_conn=128
-    num_bytes=1073741824 # 1GiB or 1024MiB
+    num_bytes=16777216 # 16MiB (16 * 2^20 B)
 
     # take down file data
     find ./ -type f -name "$wolfssl_lib_pat" -exec du -b {} + \
         | awk  '{ sub(".*/", "", $2); print $1, "B", $2 }' OFS="\t" FS="\t"
 
-    # take down algorithm benchmark data
     counter=0
-    while [ $counter -lt 10 ]
+    while [ $counter -lt 5 ]
     do
         counter=$((counter+1))
+        # take down algorithm benchmark data
         ./wolfcrypt/benchmark/benchmark \
             | awk  'function snipe_name() {
                         # use numbers (and surrounding spaces) to break up text
@@ -320,22 +320,23 @@ generate() {
                     /Cycles/   { print $(NF-0), "cpB", $1 }
                     /ops\/sec/ { print $(NF-1), "ops/s", snipe_name() }
                    ' OFS="\t"
+
+        # take down connection data
+        client_server "-p 11114" "-C $num_conn" "-b $num_conn" \
+            | awk  '/wolfSSL_connect/ { print $4, "ms", "connections" }
+                   ' OFS="\t"
+
+        # take down throughput data
+        client_server "-N -B $num_bytes -p 11115" \
+            | awk  'BEGIN       { prefix="ERROR" }
+                    /Benchmark/ { prefix=$2 }
+                    /\(.*\)/    { print $5, $6, prefix" "$2 }
+                   ' OFS="\t" FS="[( \t)]+"
     done \
         | awk  '    { s[$3]+=$1; u[$3]=$2; ++c[$3] }
                 END { for (n in s) print (s[n]/c[n]), u[n], n }
                ' OFS="\t" FS="\t" \
         | sort -t "$(printf "\t")" -k 2,3
-
-    # take down connection data
-    client_server "-p 11114" "-C $num_conn" "-b $num_conn" \
-        | awk  '/wolfSSL_connect/ { print $4, "ms", "connections" }' OFS="\t"
-
-    # take down throughput data
-    client_server "-N -B $num_bytes -p 11115" \
-        | awk  'BEGIN       { prefix="ERROR" }
-                /Benchmark/ { prefix=$2 }
-                /\(.*\)/    { print $5, $6, prefix" "$2 }
-               ' OFS="\t" FS="[( \t)]+"
 
     return 0
 }
