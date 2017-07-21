@@ -1,3 +1,4 @@
 
 # the above empty line is significant: it is a blank configuration
 --enable-opensslextra
+--disable-fastmath
