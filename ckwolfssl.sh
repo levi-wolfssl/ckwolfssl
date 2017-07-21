@@ -76,8 +76,7 @@ unset ephemeral
 #
 ###############################################################################
 cleanup() {
-    # @temporary: keep $work alive so that we can scrutinize it
-    #rm -rf "$work"
+    rm -rf "$work"
     rm -f "$server_ready"
     [ "$PWD" = "${dir?}/wolfssl" ] && git checkout --quiet "$current_commit"
     if pid p "$server_pid" >/dev/null 2>&1
@@ -698,8 +697,7 @@ exec <&5 5<&-
 if [ "$ephemeral" != yes ]
 then
     cat "$data"/* >"${store:?}/${baseline_commit_abs:?}"
-    # @temporary: leave the data in place for inspection
-    #rm -rf "$work"/data
+    rm -rf "$work"/data
 fi >&3 2>&4
 
 exit $ret
